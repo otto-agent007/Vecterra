@@ -67,7 +67,7 @@ jobs:
         run: backend/tests/sql/run.sh
 
   mobile:
-    name: Mobile (typecheck + expo-doctor)
+    name: Mobile (typecheck + jest + expo-doctor)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -83,5 +83,7 @@ jobs:
         run: npm ci
       - name: Typecheck
         run: npx tsc --noEmit
+      - name: Unit tests (offline queue)
+        run: npx jest --ci
       - name: Expo dependency check
         run: npx expo-doctor

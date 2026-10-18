@@ -34,6 +34,16 @@ export default function CaptureScreen() {
   const [location, setLocation] = useState<CaptureLocation | null>(null);
   const [busy, setBusy] = useState<'photo' | 'lidar' | 'save' | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
+  const savedRef = useRef(false);
+
+  // Orphan cleanup: if the agent backs out without saving, nothing stays on disk.
+  useEffect(() => {
+    return () => {
+      if (!savedRef.current) {
+        FileSystem.deleteAsync(scanDirectory(scanId), { idempotent: true }).catch(() => {});
+      }
+    };
+  }, [scanId]);
 
   useEffect(() => {
     if (!cameraPermission?.granted) requestCameraPermission();
@@ -67,12 +77,15 @@ export default function CaptureScreen() {
       if (!shot) return;
       const dir = scanDirectory(scanId);
       await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
-      const dest = `${dir}photo-${photos.length + 1}.jpg`;
+      // UUID basename: deleting photo 1 of 3 and shooting again can never
+      // collide with an existing file (moveAsync onto an existing path fails on iOS).
+      const id = Crypto.randomUUID();
+      const dest = `${dir}${id}.jpg`;
       await FileSystem.moveAsync({ from: shot.uri, to: dest });
       const headingDeg = await readHeading();
       setPhotos((prev) => [
         ...prev,
-        { uri: dest, width: shot.width, height: shot.height, capturedAt: new Date().toISOString(), headingDeg },
+        { id, uri: dest, width: shot.width, height: shot.height, capturedAt: new Date().toISOString(), headingDeg },
       ]);
     } catch (err) {
       Alert.alert('Capture failed', err instanceof Error ? err.message : String(err));
@@ -135,18 +148,25 @@ export default function CaptureScreen() {
           app_version: Constants.expoConfig?.version ?? 'dev',
         },
         attempts: 0,
+        nextAttemptAt: null,
         lastError: null,
       };
 
       // 1) Persist locally first — this is the offline-first guarantee.
       await enqueueScan(scan);
+      savedRef.current = true;
       // 2) Opportunistic upload; failures stay queued and retry on reconnect.
       const result = await flushQueue();
-      const msg = result.skipped
-        ? 'Saved to the upload queue — it will sync when you are back online.'
-        : result.failed > 0
-          ? 'Saved; upload will retry automatically.'
-          : 'Uploaded to Supabase.';
+      const msg =
+        result.kind === 'offline'
+          ? 'Saved to the upload queue — it will sync when you are back online.'
+          : result.kind === 'not_signed_in'
+            ? 'Saved to the upload queue — sign in to sync.'
+            : result.kind === 'busy'
+              ? 'Saved; a sync is already running and will pick it up.'
+              : result.uploaded > 0 && result.failed === 0 && result.deferred === 0
+                ? 'Uploaded.'
+                : 'Saved; upload will retry automatically.';
       Alert.alert('Capture saved', msg, [{ text: 'OK', onPress: () => router.back() }]);
     } catch (err) {
       Alert.alert('Save failed', err instanceof Error ? err.message : String(err));
@@ -199,7 +219,7 @@ export default function CaptureScreen() {
       {photos.length > 0 && (
         <ScrollView horizontal style={styles.strip} contentContainerStyle={{ gap: 8, paddingHorizontal: 12 }}>
           {photos.map((p, i) => (
-            <Pressable key={p.uri} onLongPress={() => removePhoto(i)}>
+            <Pressable key={p.id} onLongPress={() => removePhoto(i)}>
               <Image source={{ uri: p.uri }} style={styles.thumb} />
             </Pressable>
           ))}

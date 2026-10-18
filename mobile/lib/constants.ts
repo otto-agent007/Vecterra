@@ -10,11 +10,21 @@ export const HARMONY_GROVE_REGION: Region = {
 
 export const STUDY_AREA_ZIP = '92029';
 
+/** [minLon, minLat, maxLon, maxLat] — must match HARMONY_GROVE_BBOX in backend/ingestion/load_parcels.py. */
+export const HARMONY_GROVE_BBOX = [-117.145, 33.07, -117.09, 33.12] as const;
+
+/**
+ * Individual markers are drawn only when the viewport is at most this tall
+ * (degrees of latitude). ~0.02° ≈ 2.2 km. Above it, the map shows a
+ * "zoom in" banner instead of thousands of custom marker views.
+ */
+export const MARKER_MAX_LAT_DELTA = 0.02;
+
 /** Supabase Storage bucket for exterior photos + LiDAR captures (private). */
 export const SCAN_BUCKET = 'property-scans';
 
 export const MAX_PHOTOS_PER_SCAN = 6;
-export const MAX_MARKERS = 500;
+export const MAX_MARKERS = 5000; // whole-study-area fetch; server caps at 5000
 
 /** Equity tiers drive marker color only — never contact priority on their own. */
 export const EQUITY_TIERS = [

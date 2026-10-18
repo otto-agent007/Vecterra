@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { PARCEL_PUBLIC_COLUMNS, formatMoney, formatSqft } from '@/lib/constants';
+import { getCachedParcelRow, setCachedParcelRow } from '@/lib/offlineQueue';
 import { supabase } from '@/lib/supabase';
 import type { Parcel, ScanStatus } from '@/lib/types';
 
@@ -51,12 +52,17 @@ export default function ParcelDetailScreen() {
 
   useEffect(() => {
     (async () => {
+      // Cache first so the screen works in a dead zone; refresh live if we can.
+      const cached = await getCachedParcelRow(String(apn));
+      if (cached) setParcel(cached);
+
       const { data: p, error: pe } = await supabase.from('parcels').select<string, Parcel>(PARCEL_PUBLIC_COLUMNS).eq('apn', apn).single();
       if (pe || !p) {
-        setError(pe?.message ?? 'Parcel not found');
+        if (!cached) setError(pe ? 'Could not load parcel — you may be offline.' : 'Parcel not found');
         return;
       }
       setParcel(p as Parcel);
+      setCachedParcelRow(p as Parcel).catch(() => {});
       const [{ data: s }, { data: d }] = await Promise.all([
         supabase.from('property_scans').select('id, captured_at, status, image_paths').eq('parcel_id', p.id).order('captured_at', { ascending: false }),
         supabase.from('dossiers').select('id, version, status, compliance_passed, health_scores, generated_at').eq('parcel_id', p.id).order('version', { ascending: false }).limit(1),

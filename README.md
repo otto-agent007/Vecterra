@@ -116,8 +116,10 @@ cp .env.example .env            # EXPO_PUBLIC_SUPABASE_URL / EXPO_PUBLIC_SUPABAS
 npx expo run:ios                # dev client (react-native-maps + camera need native code; Expo Go won't do)
 ```
 
-* **Map** opens on Harmony Grove (33.0935, −117.1175). Markers come from `parcels_in_bbox`, colored by modeled equity tier, ringed white when a scan exists. Tapping fetches the full `parcels` row; the last successful fetch is cached for offline use.
-* **Capture** shoots up to 6 photos, tags GPS + compass heading, writes everything to the app sandbox and an AsyncStorage queue, then uploads to `property-scans/<apn>/<scan_id>/photo-N.jpg` and upserts `property_scans`. Uploads retry automatically on reconnect (`_layout.tsx`).
+* **Sign-in** with a field-agent email/password account (Supabase Auth). The root layout guards every other route. Dev builds with `EXPO_PUBLIC_ALLOW_ANON_AUTH=true` get an anonymous shortcut; release builds never do.
+* **Map** opens on Harmony Grove (33.0935, −117.1175). The **whole study area** is fetched once via `parcels_in_bbox` and cached on-device; panning filters client-side, so the map is identical with or without signal (a banner shows the cache timestamp when offline). Markers are colored by modeled equity tier, ringed white when a scan exists, and drawn only below `MARKER_MAX_LAT_DELTA` zoom. Tapping shows the summary, then the cached row, then the live row — stale responses can never overwrite newer ones.
+* **Capture** shoots up to 6 photos (UUID filenames, so deletes never collide), tags GPS + compass heading, writes everything to the app sandbox and an AsyncStorage queue, then uploads to `property-scans/<apn>/<scan_id>/<photo-id>.jpg` and upserts `property_scans`. Backing out without saving deletes the photos.
+* **Upload queue** (`lib/offlineQueue.ts`): every mutation runs under a mutex; each photo tracks its own uploaded flag so a half-finished scan resumes where it stopped; network drops never consume an attempt, server rejections do, with exponential backoff (30 s → 30 min) and a manual *Retry now*. `flushQueue` distinguishes `offline` / `busy` / `not_signed_in` / `done`. `lib/__tests__/offlineQueue.test.ts` covers the interleaving, resume, backoff and parking cases; run with `npm test`.
 * **LiDAR** is a native-module boundary (`lib/lidar.ts`): the steps to build an ARKit `ARMeshAnchor` Expo module are documented there; until it exists the button reports "unavailable" and photos still upload.
 * Add a Google Maps key in `app.json` for Android; iOS uses Apple Maps by default.
 
@@ -133,8 +135,7 @@ npx expo run:ios                # dev client (react-native-maps + camera need na
 ## 5. Roadmap after scaffold
 
 - [ ] Spatial join against city-boundary layer to resolve `jurisdiction` instead of zoning-code heuristics
-- [ ] Marker clustering (`react-native-map-clustering`) above ~300 parcels
+- [ ] Marker clustering above the zoom gate (currently a "zoom in" banner)
 - [ ] On-device CV (blur/exposure gate) populating `edge_cv_metadata` before upload
-- [ ] Sign-in screen for field-agent accounts (RLS is already per-agent)
 - [ ] Supabase Database Webhook → `/webhooks/supabase/scan-uploaded`
 - [ ] Human review UI for `compliance_hold` dossiers

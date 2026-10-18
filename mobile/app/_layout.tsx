@@ -5,6 +5,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 
+import { BRAND } from '@/lib/constants';
 import { flushQueue } from '@/lib/offlineQueue';
 import { ensureSession, supabase } from '@/lib/supabase';
 
@@ -49,8 +50,9 @@ export default function RootLayout() {
 
   if (session === undefined) {
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-        <ActivityIndicator />
+      // Same color as the splash screen and sign-in, so there is no white flash on launch.
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: BRAND.background }}>
+        <ActivityIndicator color={BRAND.wordmark} />
       </View>
     );
   }

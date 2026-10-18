@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="mobile/assets/brand/vecterra-logo.png" alt="Vecterra" width="300">
+</p>
+
 # Vecterra — Spatial & Structural Equity Engine (MVP)
 
 [![CI](https://github.com/otto-agent007/Vecterra/actions/workflows/ci.yml/badge.svg)](https://github.com/otto-agent007/Vecterra/actions/workflows/ci.yml)

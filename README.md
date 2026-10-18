@@ -1,5 +1,7 @@
 # Vecterra — Spatial & Structural Equity Engine (MVP)
 
+[![CI](https://github.com/otto-agent007/Vecterra/actions/workflows/ci.yml/badge.svg)](https://github.com/otto-agent007/Vecterra/actions/workflows/ci.yml)
+
 Offline-first proptech system that surfaces **off-market homeowner leads in Harmony Grove, Escondido, CA (ZIP 92029)** from public parcel records, field-captured exterior imagery, and deterministic zoning rules — **without any MLS data feed**.
 
 ```

@@ -1,0 +1,99 @@
+{
+  "type": "FeatureCollection",
+  "name": "vecterra_sample_parcels",
+  "_comment": "SYNTHETIC fixture for local testing. APNs, addresses and values are invented and do not correspond to real parcels. Replace with the SanGIS PARCELS layer filtered to ZIP 92029.",
+  "crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "APN": "999-001-01-00",
+        "SITUS_ADDRESS": "100 Sample Grove Rd",
+        "SITUS_COMMUNITY": "HARMONY GROVE",
+        "SITUS_ZIP": "92029",
+        "ZONING": "RR",
+        "ACREAGE": 1.92,
+        "YEAR_BUILT": 1978,
+        "TOTAL_LVG_AREA": 2140,
+        "ASR_LAND": 180000,
+        "ASR_IMPR": 210000,
+        "OWNEROCC": "Y",
+        "SALE_DATE": "2004-06-15",
+        "SALE_PRICE": 520000
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-117.1190, 33.0940], [-117.1180, 33.0940], [-117.1180, 33.0948], [-117.1190, 33.0948], [-117.1190, 33.0940]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "APN": "999-001-02-00",
+        "SITUS_ADDRESS": "112 Sample Grove Rd",
+        "SITUS_COMMUNITY": "HARMONY GROVE",
+        "SITUS_ZIP": "92029",
+        "ZONING": "RR",
+        "ACREAGE": 2.40,
+        "YEAR_BUILT": 1965,
+        "TOTAL_LVG_AREA": 1720,
+        "ASR_LAND": 95000,
+        "ASR_IMPR": 88000,
+        "OWNEROCC": "Y",
+        "SALE_DATE": "1996-03-02",
+        "SALE_PRICE": 265000
+      },
+      "geometry": {
+        "type": "MultiPolygon",
+        "coordinates": [
+          [[[-117.1180, 33.0940], [-117.1168, 33.0940], [-117.1168, 33.0950], [-117.1180, 33.0950], [-117.1180, 33.0940]]],
+          [[[-117.1167, 33.0941], [-117.1165, 33.0941], [-117.1165, 33.0943], [-117.1167, 33.0943], [-117.1167, 33.0941]]]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "APN": "999-002-07-00",
+        "SITUS_ADDRESS": "2201 Sample Village Pkwy",
+        "SITUS_COMMUNITY": "HARMONY GROVE",
+        "SITUS_ZIP": "92029",
+        "ZONING": "S88",
+        "ACREAGE": 0.14,
+        "YEAR_BUILT": 2017,
+        "TOTAL_LVG_AREA": 2650,
+        "ASR_LAND": 320000,
+        "ASR_IMPR": 540000,
+        "OWNEROCC": "Y",
+        "SALE_DATE": "2021-09-20",
+        "SALE_PRICE": 985000
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-117.1120, 33.0960], [-117.1115, 33.0960], [-117.1115, 33.0964], [-117.1120, 33.0964], [-117.1120, 33.0960]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "APN": "999-003-11-00",
+        "SITUS_ADDRESS": "450 Sample Country Club Dr",
+        "SITUS_COMMUNITY": "ESCONDIDO",
+        "SITUS_ZIP": "92029",
+        "ZONING": "R-1-20",
+        "ACREAGE": 0.52,
+        "YEAR_BUILT": 1989,
+        "TOTAL_LVG_AREA": 2380,
+        "ASR_LAND": 240000,
+        "ASR_IMPR": 290000,
+        "OWNEROCC": "N",
+        "SALE_DATE": "2011-11-11",
+        "SALE_PRICE": 610000
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-117.1010, 33.1035], [-117.1002, 33.1035], [-117.1002, 33.1041], [-117.1010, 33.1041], [-117.1010, 33.1035]]]
+      }
+    }
+  ]
+}

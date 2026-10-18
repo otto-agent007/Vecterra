@@ -136,6 +136,8 @@ create index if not exists property_scans_parcel_idx   on property_scans (parcel
 create index if not exists property_scans_apn_idx      on property_scans (apn);
 create index if not exists property_scans_status_idx   on property_scans (status);
 create index if not exists property_scans_location_gix on property_scans using gist (capture_location);
+-- Every RLS check on this table filters on captured_by = auth.uid(); index it.
+create index if not exists property_scans_captured_by_idx on property_scans (captured_by);
 
 drop trigger if exists property_scans_set_updated_at on property_scans;
 create trigger property_scans_set_updated_at before update on property_scans
@@ -192,6 +194,9 @@ create table if not exists dossiers (
 
 create index if not exists dossiers_parcel_idx on dossiers (parcel_id);
 create index if not exists dossiers_status_idx on dossiers (status);
+-- Cover the remaining foreign keys so ON DELETE SET NULL doesn't seq-scan dossiers.
+create index if not exists dossiers_scan_id_idx     on dossiers (scan_id);
+create index if not exists dossiers_approved_by_idx on dossiers (approved_by);
 
 drop trigger if exists dossiers_set_updated_at on dossiers;
 create trigger dossiers_set_updated_at before update on dossiers

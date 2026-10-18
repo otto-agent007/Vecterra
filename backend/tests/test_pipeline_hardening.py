@@ -158,3 +158,11 @@ def test_equity_missing_date_uses_price_without_uplift():
 def test_equity_nothing_known():
     assert estimate_equity(None, None, None)["estimated_equity"] is None
     assert MIN_PLAUSIBLE_SALE_PRICE > 1000
+
+
+def test_ingestion_derives_lot_area_from_geometry_when_missing():
+    from shapely.geometry import Polygon
+    from ingestion.load_parcels import _polygon_area_sqft
+    # ~0.0002 deg x ~0.00028 deg at 33.1N  ->  ~18.7 m x ~31 m  ->  ~6,230 sq ft
+    sq = _polygon_area_sqft(Polygon([(-117.1120, 33.0960), (-117.1118, 33.0960), (-117.1118, 33.09628), (-117.1120, 33.09628)]))
+    assert 6_000 < sq < 6_500

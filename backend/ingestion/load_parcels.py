@@ -287,6 +287,15 @@ def to_polygon(geom: BaseGeometry) -> Optional[Polygon]:
     return None
 
 
+def _polygon_area_sqft(poly: Polygon) -> float:
+    """Planar area of a lon/lat polygon in square feet (local equirectangular; <0.5% error at parcel scale)."""
+    import math
+    from shapely.affinity import affine_transform
+    lat0 = poly.centroid.y
+    kx, ky = 111_320.0 * math.cos(math.radians(lat0)), 110_540.0
+    return round(affine_transform(poly, [kx, 0, 0, ky, 0, 0]).area / 0.3048 ** 2, 1)
+
+
 def to_ewkt(poly: Polygon) -> str:
     return f"SRID=4326;{poly.wkt}"
 
@@ -363,6 +372,8 @@ def normalize(
         if lot_sqft is None:
             acres = _to_float(get("acreage"))
             lot_sqft = round(acres * 43560, 1) if acres else None
+        if lot_sqft is None:
+            lot_sqft = _polygon_area_sqft(poly)  # no area column in the source: measure the outline
 
         assessed_land = _to_float(get("assessed_land_value"))
         assessed_impr = _to_float(get("assessed_improvement_value"))

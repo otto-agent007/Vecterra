@@ -23,8 +23,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 from langgraph.graph import END, StateGraph
 
-from .compliance import FIREWALL_VERSION, screen_fragments, screen_text
+from .compliance import FIREWALL_VERSION, find_violations, normalize, screen_fragments, screen_text
 from .dossier_generator import GENERATOR_VERSION, build_dossier_record, build_lead_rationale, render_html, render_markdown
+from .report_html import REPORT_TEMPLATE_VERSION, hold_reasons_from_state, render_report_html, visible_text
 from .state import VecterraState, VisionScores
 from .zoning_rules import RULES_VERSION, evaluate_zoning
 
@@ -165,21 +166,54 @@ def draft_dossier_node(state: VecterraState) -> Dict[str, Any]:
 
 
 def compliance_firewall_node(state: VecterraState) -> Dict[str, Any]:
-    """ComplianceFirewallNode: deterministic FHA / FEHA guardrail on all generated text."""
+    """ComplianceFirewallNode: deterministic FHA / FEHA guardrail on all generated text.
+
+    1. Screen the Markdown dossier (canonical text): redact blocks, append disclaimers.
+    2. Render the designed HTML report from the same structured state, then screen
+       its *visible text* too (minus the fixed disclaimer block). The designed
+       report is only used when that second pass finds nothing blocked;
+       otherwise the report falls back to HTML rendered from the redacted
+       Markdown, so no unscreened sentence can reach a reader.
+    """
+    parcel = state["parcel"]
     result = screen_text(state.get("draft_markdown", ""), rationale=state.get("lead_rationale") or {})
     if not result.passed:
-        log.warning("Compliance firewall BLOCKED %d span(s) for APN %s",
-                    len(result.blocked), state.get("parcel", {}).get("apn"))
-    html = render_html(result.text, apn=state["parcel"].get("apn", ""), firewall_version=result.firewall_version)
-    versions = {**(state.get("model_versions") or {}), "firewall": FIREWALL_VERSION}
+        log.warning("Compliance firewall BLOCKED %d span(s) for APN %s", len(result.blocked), parcel.get("apn"))
+
     # Findings from screening vision observations at ingestion time are part of
     # the audit trail even though they never reached the Markdown.
-    vision_findings = state.get("vision_findings") or []
+    compliance_log = (state.get("vision_findings") or []) + result.as_log()
+    passed = result.passed
+    html: Optional[str] = None
+    report_template = "markdown-fallback"
+
+    if passed:
+        designed = render_report_html(
+            parcel,
+            state.get("vision_scores") or {},
+            state.get("zoning_analysis") or {},
+            state.get("lead_rationale") or {},
+            hold_reasons=hold_reasons_from_state(state, warnings=result.warnings),
+        )
+        html_blocks = [f for f in find_violations(normalize(visible_text(designed))) if f["severity"] == "block"]
+        if html_blocks:
+            log.warning("Designed report tripped %d block rule(s) for APN %s; using redacted fallback",
+                        len(html_blocks), parcel.get("apn"))
+            compliance_log += [{**f, "source": "report_html"} for f in html_blocks]
+            passed = False
+        else:
+            html = designed
+            report_template = REPORT_TEMPLATE_VERSION
+
+    if html is None:
+        html = render_html(result.text, apn=parcel.get("apn", ""), firewall_version=result.firewall_version)
+
+    versions = {**(state.get("model_versions") or {}), "firewall": FIREWALL_VERSION, "report": report_template}
     return {
         "final_markdown": result.text,
         "final_html": html,
-        "compliance_log": vision_findings + result.as_log(),
-        "compliance_passed": result.passed,
+        "compliance_log": compliance_log,
+        "compliance_passed": passed,
         "model_versions": versions,
     }
 
@@ -274,7 +308,10 @@ DEMO_PARCEL: Dict[str, Any] = {
     "situs_address": "100 Sample Grove Rd",
     "jurisdiction": "san_diego_county",
     "zoning_code": "RR",
-    "lot_area_sqft": 83635,
+    "lot_area_sqft": 130680,
+    # Same synthetic outline as ingestion/sample_parcels.geojson (APN 999-001-01-00)
+    "geom": "SRID=4326;POLYGON ((-117.118 33.094, -117.118 33.0948, -117.11862 33.09503, -117.11931 33.09479, "
+            "-117.11922 33.09418, -117.11878 33.09389, -117.118 33.094))",
     "year_built": 1978,
     "living_area_sqft": 2140,
     "owner_occupied": True,

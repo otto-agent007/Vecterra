@@ -107,8 +107,14 @@ curl -X POST localhost:8000/pipeline/run -H 'content-type: application/json' -d 
 |---|---|---|
 | `VisionScorerNode` | LLM (vision) | Scores roof / paint / structure 0–100 from signed photo URLs. System prompt forbids describing people or occupant signals. Model set by `VECTERRA_VISION_MODEL`. |
 | `ZoningAnalyzerNode` | deterministic | State ADU floor (4 ft side/rear setbacks, 800 sq ft by-right) + county/city tables → feasibility score and caveats. Every number carries a `verify` note. |
-| `DraftDossierNode` | template | Jinja2 Markdown from structured state only — no free-form prose. |
+| `DraftDossierNode` | template | Jinja2 Markdown from structured state only — no free-form prose. This is the canonical, screened text. |
 | `ComplianceFirewallNode` | deterministic | Regex rule set for FHA + CA FEHA protected classes, steering phrases, distress targeting, occupant inference. Text is NFKC-normalized and stripped of invisible characters and HTML first. Blocks are redacted (overlapping spans merged), warnings route the dossier to `compliance_hold`, Equal Housing + estimate disclaimers appended. Lead rationale keys are whitelisted to property factors. Vision observations are screened by the same rules *before they enter state*, so no unscreened model text reaches the DB, API, or report. `tests/test_firewall_corpus.py` is the must-block / must-pass corpus — add a case whenever the field finds a miss. |
+
+### The dossier report
+
+`agents/report_html.py` renders the homeowner-facing report from the same structured state: the parcel drawn from its PostGIS geometry as a survey plat (boundary lengths, scale bar, north arrow, setback line when visible at scale) on the brand's night background, then exterior condition, lot and ADU potential, estimated value and equity, the property factors behind the outreach, and next steps. It is responsive and prints to US Letter.
+
+After rendering, the compliance firewall screens the report's visible text as well (the fixed disclaimer block excepted). If anything is blocked, the pipeline falls back to HTML rendered from the redacted Markdown, so an unscreened sentence can never reach a reader. `model_versions.report` records which one was used.
 
 ## 3. Mobile
 

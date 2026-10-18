@@ -47,11 +47,14 @@ export interface Parcel {
 }
 
 export interface CapturedPhoto {
+  id: string;           // uuid — also the storage object basename, so deletes never collide
   uri: string;          // file:// path inside the app's document directory
   width: number;
   height: number;
   capturedAt: string;   // ISO
   headingDeg: number | null;
+  uploaded?: boolean;   // set by the uploader; retries skip uploaded photos
+  objectPath?: string;  // storage path once uploaded
 }
 
 export interface CaptureLocation {
@@ -68,11 +71,13 @@ export interface QueuedScan {
   capturedAt: string;
   photos: CapturedPhoto[];
   lidarUri: string | null;
+  lidarUploaded?: boolean;
   location: CaptureLocation | null;
   headingDeg: number | null;
   edgeCvMetadata: Record<string, unknown>;
   deviceMetadata: Record<string, unknown>;
-  attempts: number;
+  attempts: number;         // server rejections only; network drops don't count
+  nextAttemptAt: string | null; // ISO; exponential backoff after a rejection
   lastError: string | null;
 }
 

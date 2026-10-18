@@ -2,7 +2,8 @@ import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { flushQueue, listQueue, removeFromQueue } from '@/lib/offlineQueue';
+import { MAX_ATTEMPTS, flushQueue, listQueue, removeFromQueue, retryScan } from '@/lib/offlineQueue';
+import { supabase } from '@/lib/supabase';
 import type { QueuedScan } from '@/lib/types';
 
 /** Shows captures waiting to upload; lets the agent force a sync or discard one. */
@@ -21,8 +22,10 @@ export default function QueueScreen() {
     setSyncing(true);
     try {
       const r = await flushQueue((done, total) => setProgress(`${done}/${total}`));
-      if (r.skipped) Alert.alert('Offline', 'No connection — captures will upload automatically when you reconnect.');
-      else Alert.alert('Sync complete', `${r.uploaded} uploaded, ${r.failed} still pending.`);
+      if (r.kind === 'offline') Alert.alert('Offline', 'No connection — captures will upload automatically when you reconnect.');
+      else if (r.kind === 'not_signed_in') Alert.alert('Not signed in', 'Sign in to upload captures.');
+      else if (r.kind === 'busy') Alert.alert('Sync running', 'A sync is already in progress.');
+      else Alert.alert('Sync complete', `${r.uploaded} uploaded · ${r.failed} rejected · ${r.deferred} waiting.`);
     } finally {
       setSyncing(false);
       setProgress(null);
@@ -30,10 +33,19 @@ export default function QueueScreen() {
     }
   };
 
-  const discard = (scan: QueuedScan) =>
-    Alert.alert('Discard capture?', `APN ${scan.apn} · ${scan.photos.length} photo(s) will be deleted from this device.`, [
-      { text: 'Keep', style: 'cancel' },
-      { text: 'Discard', style: 'destructive', onPress: () => removeFromQueue(scan.scanId).then(refresh) },
+  const actions = (scan: QueuedScan) =>
+    Alert.alert(`APN ${scan.apn}`, `${scan.photos.length} photo(s)${scan.lastError ? `\nLast error: ${scan.lastError}` : ''}`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Retry now', onPress: () => retryScan(scan.scanId).then(() => sync()) },
+      {
+        text: 'Discard',
+        style: 'destructive',
+        onPress: () =>
+          Alert.alert('Discard capture?', 'Photos will be deleted from this device.', [
+            { text: 'Keep', style: 'cancel' },
+            { text: 'Discard', style: 'destructive', onPress: () => removeFromQueue(scan.scanId).then(refresh) },
+          ]),
+      },
     ]);
 
   return (
@@ -51,20 +63,36 @@ export default function QueueScreen() {
         contentContainerStyle={{ padding: 16, gap: 10 }}
         ListEmptyComponent={<Text style={styles.empty}>Everything is uploaded.</Text>}
         renderItem={({ item }) => (
-          <Pressable style={styles.item} onLongPress={() => discard(item)}>
+          <Pressable style={styles.item} onPress={() => actions(item)}>
             <Text style={styles.itemTitle}>APN {item.apn}</Text>
             <Text style={styles.itemSub}>
-              {new Date(item.capturedAt).toLocaleString()} · {item.photos.length} photo(s){item.lidarUri ? ' · LiDAR' : ''}
+              {new Date(item.capturedAt).toLocaleString()} · {item.photos.filter((p) => p.uploaded).length}/{item.photos.length} photo(s) uploaded
+              {item.lidarUri ? ' · LiDAR' : ''}
             </Text>
-            {item.attempts > 0 && (
+            {item.attempts >= MAX_ATTEMPTS ? (
+              <Text style={styles.itemError}>Stopped after {item.attempts} rejections — tap to retry or discard.</Text>
+            ) : item.attempts > 0 ? (
               <Text style={styles.itemError}>
-                {item.attempts} failed attempt{item.attempts === 1 ? '' : 's'}: {item.lastError}
+                {item.attempts} rejection{item.attempts === 1 ? '' : 's'} · next try {item.nextAttemptAt ? new Date(item.nextAttemptAt).toLocaleTimeString() : 'soon'}
               </Text>
-            )}
+            ) : item.lastError ? (
+              <Text style={styles.itemWarn}>Waiting for connection: {item.lastError}</Text>
+            ) : null}
           </Pressable>
         )}
       />
-      <Text style={styles.hint}>Long-press a capture to discard it.</Text>
+      <Text style={styles.hint}>Tap a capture to retry or discard it.</Text>
+      <Pressable
+        onPress={() =>
+          Alert.alert('Sign out?', queue.length ? `${queue.length} capture(s) are still waiting to upload and will stay on this device.` : undefined, [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Sign out', style: 'destructive', onPress: () => supabase.auth.signOut() },
+          ])
+        }
+        style={styles.signOut}
+      >
+        <Text style={styles.signOutText}>Sign out</Text>
+      </Pressable>
     </View>
   );
 }
@@ -81,5 +109,8 @@ const styles = StyleSheet.create({
   itemTitle: { fontWeight: '700', color: '#1f2933' },
   itemSub: { color: '#52606d', fontSize: 13, marginTop: 2 },
   itemError: { color: '#c92a2a', fontSize: 12, marginTop: 4 },
+  itemWarn: { color: '#e67700', fontSize: 12, marginTop: 4 },
   hint: { textAlign: 'center', color: '#868e96', fontSize: 12, padding: 10 },
+  signOut: { alignSelf: 'center', paddingVertical: 10, paddingHorizontal: 16, marginBottom: 12 },
+  signOutText: { color: '#c92a2a', fontWeight: '600' },
 });

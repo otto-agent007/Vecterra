@@ -26,7 +26,10 @@ function ParcelMarker({ parcel, selected, onPress }: Props) {
         e.stopPropagation();
         onPress();
       }}
-      tracksViewChanges={false}
+      // react-native-maps snapshots a custom marker view once when this is false.
+      // Keep it true only while the marker is selected so the highlight ring
+      // actually redraws, and false otherwise for performance.
+      tracksViewChanges={Boolean(selected)}
       anchor={{ x: 0.5, y: 0.5 }}
     >
       <View

@@ -74,7 +74,8 @@ COLUMN_CANDIDATES: Dict[str, List[str]] = {
     "tax_year": ["TAX_YEAR", "ROLL_YEAR", "tax_year"],
     "owner_occupied": ["OWNEROCC", "OWNER_OCC", "owner_occupied"],
     "last_sale_date": ["SALE_DATE", "DOC_DATE", "last_sale_date"],
-    "last_sale_price": ["SALE_PRICE", "DOC_AMT", "last_sale_price"],
+    # NOTE: DOC_AMT (documentary transfer tax) is deliberately NOT a candidate; it is ~1000x smaller than price.
+    "last_sale_price": ["SALE_PRICE", "last_sale_price"],
     "owner_name": ["OWN_NAME1", "OWNER_NAME", "owner_name"],
     "owner_mailing_address": ["OWN_ADDR1", "MAIL_ADDR", "owner_mailing_address"],
 }
@@ -84,7 +85,12 @@ RAW_TAX_COLUMNS = [
     "EXEMPT_AMT", "NUCLEUS_USE_CD", "ASR_LANDUSE", "LEGLDESC",
 ]
 
-EQUITY_MODEL_VERSION = "naive-prop13-v0.1"
+EQUITY_MODEL_VERSION = "naive-prop13-v0.2"
+
+# Sales below this are trust transfers, $0 quitclaims, or transfer-tax amounts
+# mislabeled as price. They carry no market information and must not anchor
+# the model (or reset its clock).
+MIN_PLAUSIBLE_SALE_PRICE = 25_000
 
 
 # =============================================================================
@@ -205,49 +211,65 @@ def estimate_equity(
     purchase_ltv: float = 0.80,
     mortgage_rate: float = 0.06,
     term_years: int = 30,
+    max_years: int = 40,
 ) -> Dict[str, Optional[float]]:
     """Naive, clearly-labeled equity model (placeholder for an AVM).
 
-    Prop 13 means assessed values lag the market by the years since the last
-    reassessment, so we uplift the last sale price (or assessed total) by a
-    flat appreciation rate, then subtract an amortized loan balance assuming a
-    typical purchase LTV. Every output is an *estimate* and is flagged as such
-    in the dossier and compliance layer.
+    Two regimes:
+
+    * **Plausible arms-length sale on record** — uplift the sale price by a flat
+      appreciation rate for the years since the sale, and subtract an amortized
+      purchase-money loan at a typical LTV. This is the only case where the
+      time-since-sale clock is used.
+    * **No plausible sale** (trust transfer, $0 quitclaim, missing) — use the
+      assessed total as a *floor* with no uplift and no modeled loan. Under
+      Prop 13 the assessed value already embeds years of capped growth, so
+      uplifting it again would double-count; without a sale date the loan
+      balance is unknowable. Confidence is low and the value is a floor.
+
+    Known limitations (documented, not solved): refinances and HELOCs are
+    invisible in assessor data, so equity is an upper bound for owners who
+    have cashed out; appreciation is a flat county-wide rate.
     """
-    base = last_sale_price or assessed_total
-    if not base or base <= 0:
-        return {"estimated_market_value": None, "estimated_equity": None, "equity_confidence": None}
+    plausible_sale = bool(last_sale_price and last_sale_price >= MIN_PLAUSIBLE_SALE_PRICE)
 
-    years = 0.0
-    if last_sale_date:
-        try:
-            sold = datetime.fromisoformat(last_sale_date).date()
-            years = max(0.0, (date.today() - sold).days / 365.25)
-        except ValueError:
-            years = 0.0
+    if plausible_sale:
+        years = 0.0
+        if last_sale_date:
+            try:
+                sold = datetime.fromisoformat(last_sale_date).date()
+                years = max(0.0, (date.today() - sold).days / 365.25)
+            except ValueError:
+                years = 0.0
+        years = min(years, max_years)
+        market = float(last_sale_price) * ((1 + annual_appreciation) ** years)
 
-    market = base * ((1 + annual_appreciation) ** min(years, 30))
+        principal = float(last_sale_price) * purchase_ltv
+        r = mortgage_rate / 12
+        n = term_years * 12
+        k = min(int(years * 12), n)
+        if r > 0:
+            balance = principal * ((1 + r) ** n - (1 + r) ** k) / ((1 + r) ** n - 1)
+        else:
+            balance = principal * (1 - k / n)
+        balance = max(0.0, balance)
 
-    # Amortized remaining balance on a purchase-money loan.
-    principal = base * purchase_ltv
-    r = mortgage_rate / 12
-    n = term_years * 12
-    k = min(int(years * 12), n)
-    if r > 0:
-        balance = principal * ((1 + r) ** n - (1 + r) ** k) / ((1 + r) ** n - 1)
-    else:
-        balance = principal * (1 - k / n)
-    balance = max(0.0, balance)
+        confidence = 0.55 if years <= 25 else 0.4
+        return {
+            "estimated_market_value": round(market, 2),
+            "estimated_equity": round(max(0.0, market - balance), 2),
+            "equity_confidence": confidence,
+        }
 
-    equity = max(0.0, market - balance)
-    confidence = 0.55 if last_sale_price else 0.3
-    if years > 25:
-        confidence -= 0.15  # ancient sale data → wide error bars
-    return {
-        "estimated_market_value": round(market, 2),
-        "estimated_equity": round(equity, 2),
-        "equity_confidence": round(max(0.05, confidence), 2),
-    }
+    if assessed_total and assessed_total > 0:
+        # Floor, not an estimate of market: see docstring.
+        return {
+            "estimated_market_value": round(float(assessed_total), 2),
+            "estimated_equity": round(float(assessed_total), 2),
+            "equity_confidence": 0.2,
+        }
+
+    return {"estimated_market_value": None, "estimated_equity": None, "equity_confidence": None}
 
 
 def to_polygon(geom: BaseGeometry) -> Optional[Polygon]:
@@ -346,6 +368,8 @@ def normalize(
         assessed_impr = _to_float(get("assessed_improvement_value"))
         assessed_total = (assessed_land or 0) + (assessed_impr or 0) or None
         sale_price = _to_float(get("last_sale_price"))
+        if sale_price is not None and sale_price < MIN_PLAUSIBLE_SALE_PRICE:
+            sale_price = None  # trust transfer / quitclaim: keep the date (public record), drop the non-price
         sale_date = _to_date(get("last_sale_date"))
         city = _clean(get("situs_city"))
         zoning = _clean(get("zoning_code"))

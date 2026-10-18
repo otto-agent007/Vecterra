@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 import markdown as md
+import nh3
 from jinja2 import Environment, StrictUndefined
 from markupsafe import escape
 
@@ -122,6 +123,16 @@ def _money(v: Any) -> str:
         return "—"
 
 
+_MD_SPECIALS = str.maketrans({c: f"\\{c}" for c in "\\`*_{}[]()#+!|<>"})
+
+
+def _md_safe(v: Any) -> str:
+    """Neutralize Markdown/HTML syntax in untrusted scalars (county strings, model text)."""
+    if v is None:
+        return ""
+    return str(v).translate(_MD_SPECIALS)
+
+
 def _default_score() -> Dict[str, Any]:
     return {"score": None, "confidence": None, "condition": "unknown", "observations": []}
 
@@ -164,12 +175,12 @@ def render_markdown(parcel: Dict[str, Any], scores: Dict[str, Any], zoning: Dict
     full_scores = {k: {**_default_score(), **(scores.get(k) or {})} for k in ("roof", "paint", "structure", "overall")}
     observations: List[str] = []
     for k in ("roof", "paint", "structure"):
-        observations.extend(full_scores[k].get("observations") or [])
+        observations.extend(_md_safe(o) for o in (full_scores[k].get("observations") or []))
 
     tmpl = _env.from_string(_MD_TEMPLATE)
     return tmpl.render(
-        address=parcel.get("situs_address") or "Address on file",
-        apn=parcel.get("apn", "—"),
+        address=_md_safe(parcel.get("situs_address")) or "Address on file",
+        apn=_md_safe(parcel.get("apn")) or "—",
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         parcel=parcel,
         scores=full_scores,
@@ -180,11 +191,41 @@ def render_markdown(parcel: Dict[str, Any], scores: Dict[str, Any], zoning: Dict
     )
 
 
+# Allow-list for the rendered report body. Everything the Markdown template emits
+# is covered; anything else (script, iframe, event handlers, javascript: URLs)
+# is stripped. This is the second line of defense after compliance.normalize()
+# strips raw tags from inputs.
+_ALLOWED_TAGS = {
+    "h1", "h2", "h3", "p", "br", "hr", "em", "strong", "ul", "ol", "li",
+    "blockquote", "code", "pre", "table", "thead", "tbody", "tr", "th", "td", "a",
+}
+_ALLOWED_ATTRS = {"a": {"href", "title"}, "th": {"align"}, "td": {"align"}}
+
+
+def sanitize_html(fragment: str) -> str:
+    return nh3.clean(fragment, tags=_ALLOWED_TAGS, attributes=_ALLOWED_ATTRS, url_schemes={"https", "http", "mailto"}, link_rel="noopener noreferrer")
+
+
 def render_html(markdown_text: str, *, apn: str, firewall_version: str) -> str:
-    body = md.markdown(markdown_text, extensions=["tables", "sane_lists"])
+    body = sanitize_html(md.markdown(markdown_text, extensions=["tables", "sane_lists"]))
     return _env.from_string(_HTML_SHELL).render(
         body=body, apn=escape(apn), generator_version=GENERATOR_VERSION, firewall_version=escape(firewall_version)
     )
+
+
+def dossier_status(state: Dict[str, Any]) -> str:
+    """A dossier is only a `draft` (eligible for approval) when the firewall passed
+    with no warnings AND the pipeline produced no errors. Anything else needs a
+    human: blocked text, warn-level findings (distress/military/religion
+    proximity), or a failed vision call that left placeholder scores.
+    """
+    if not state.get("compliance_passed"):
+        return "compliance_hold"
+    if state.get("errors"):
+        return "compliance_hold"
+    if any(f.get("severity") == "warn" for f in state.get("compliance_log") or []):
+        return "compliance_hold"
+    return "draft"
 
 
 def build_dossier_record(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -194,7 +235,8 @@ def build_dossier_record(state: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "parcel_id": parcel["id"],
         "scan_id": (state.get("scan") or {}).get("id"),
-        "status": "draft" if state.get("compliance_passed") else "compliance_hold",
+        "status": dossier_status(state),
+        "errors": list(state.get("errors") or []),
         "health_scores": {k: scores.get(k) for k in ("roof", "paint", "structure", "overall")},
         "zoning_analysis": state.get("zoning_analysis", {}),
         "lead_rationale": state.get("lead_rationale", {}),

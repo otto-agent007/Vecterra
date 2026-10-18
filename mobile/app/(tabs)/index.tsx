@@ -5,7 +5,7 @@ import MapView, { type Region } from 'react-native-maps';
 
 import ParcelCard from '@/components/ParcelCard';
 import ParcelMarker from '@/components/ParcelMarker';
-import { HARMONY_GROVE_REGION, MAX_MARKERS } from '@/lib/constants';
+import { HARMONY_GROVE_REGION, MAX_MARKERS, PARCEL_PUBLIC_COLUMNS } from '@/lib/constants';
 import { getCachedParcels, setCachedParcels } from '@/lib/offlineQueue';
 import { supabase } from '@/lib/supabase';
 import { summaryToParcel, type Parcel, type ParcelSummary } from '@/lib/types';
@@ -60,7 +60,7 @@ export default function MapScreen() {
   /** Tapping a marker fetches the full parcel row; degrade to the summary if offline. */
   const onMarkerPress = async (summary: ParcelSummary) => {
     setSelected(summaryToParcel(summary));
-    const { data, error } = await supabase.from('parcels').select('*').eq('apn', summary.apn).single();
+    const { data, error } = await supabase.from('parcels').select<string, Parcel>(PARCEL_PUBLIC_COLUMNS).eq('apn', summary.apn).single();
     if (!error && data) {
       setSelected({ ...(data as Parcel), lon: summary.lon, lat: summary.lat });
     }

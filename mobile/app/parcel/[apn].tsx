@@ -2,7 +2,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { formatMoney, formatSqft } from '@/lib/constants';
+import { PARCEL_PUBLIC_COLUMNS, formatMoney, formatSqft } from '@/lib/constants';
 import { supabase } from '@/lib/supabase';
 import type { Parcel, ScanStatus } from '@/lib/types';
 
@@ -51,7 +51,7 @@ export default function ParcelDetailScreen() {
 
   useEffect(() => {
     (async () => {
-      const { data: p, error: pe } = await supabase.from('parcels').select('*').eq('apn', apn).single();
+      const { data: p, error: pe } = await supabase.from('parcels').select<string, Parcel>(PARCEL_PUBLIC_COLUMNS).eq('apn', apn).single();
       if (pe || !p) {
         setError(pe?.message ?? 'Parcel not found');
         return;

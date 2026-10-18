@@ -19,7 +19,6 @@ class VisionScores(TypedDict, total=False):
     overall: HealthScore
     model: str
     image_count: int
-    raw: Dict[str, Any]
 
 
 class ComplianceFinding(TypedDict, total=False):
@@ -39,6 +38,7 @@ class VecterraState(TypedDict, total=False):
 
     # Agent outputs
     vision_scores: VisionScores
+    vision_findings: List[ComplianceFinding]   # firewall hits on vision observations (dropped before state)
     zoning_analysis: Dict[str, Any]
     lead_rationale: Dict[str, Any]  # property-only factors; validated by the firewall
 

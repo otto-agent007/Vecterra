@@ -20,6 +20,7 @@ pydantic>=2.6
 # Reports / utilities
 jinja2>=3.1
 markdown>=3.6
+nh3>=0.2             # HTML sanitizer for report_html
 python-dotenv>=1.0
 
 # Dev

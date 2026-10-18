@@ -10,6 +10,7 @@
 \set agent_b '22222222-2222-2222-2222-222222222222'
 
 begin;
+set local search_path = public, extensions;
 
 -- Fixture ----------------------------------------------------------------------
 insert into auth.users (id) values (:'agent_a'), (:'agent_b');
@@ -94,7 +95,29 @@ select pg_temp.assert_count('with u as (update storage.objects set created_at = 
 
 reset role;
 
--- 4. dossier version assignment is DB-side and monotonic --------------------------------
+-- 4. PostGIS lives in `extensions`, so spatial_ref_sys is not exposed via the Data API
+do $$ begin
+  if exists (select 1 from pg_extension e join pg_namespace n on n.oid = e.extnamespace
+             where e.extname = 'postgis' and n.nspname = 'public') then
+    raise exception 'ASSERTION FAILED: postgis is installed in public';
+  end if;
+  if to_regclass('public.spatial_ref_sys') is not null then
+    raise exception 'ASSERTION FAILED: public.spatial_ref_sys exists';
+  end if;
+end $$;
+
+-- 4b. every function in public pins its search_path
+do $$ declare bad text; begin
+  select string_agg(p.proname, ', ') into bad
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public'
+    and not exists (select 1 from unnest(coalesce(p.proconfig, '{}')) c where c like 'search_path=%');
+  if bad is not null then
+    raise exception 'ASSERTION FAILED: functions without pinned search_path: %', bad;
+  end if;
+end $$;
+
+-- 5. dossier version assignment is DB-side and monotonic --------------------------------
 insert into dossiers (parcel_id, health_scores, version) select id, '{}', 99 from parcels where apn = 'TEST-001';
 insert into dossiers (parcel_id, health_scores)             select id, '{}'     from parcels where apn = 'TEST-001';
 select pg_temp.assert_count('select count(*) from dossiers d join parcels p on p.id = d.parcel_id where p.apn = ''TEST-001'' and d.version in (1,2)', 2, 'trigger assigns versions 1,2 ignoring client-supplied value');

@@ -5,8 +5,16 @@
 -- Idempotent where practical so it can be re-run during early development.
 -- =============================================================================
 
-create extension if not exists postgis;
-create extension if not exists pgcrypto;   -- gen_random_uuid()
+-- Extensions live in their own schema, as Supabase recommends. Installing
+-- PostGIS into `public` would expose its `spatial_ref_sys` table through the
+-- Data API with no RLS (a Supabase security-advisor ERROR), and PostGIS cannot
+-- be relocated after install. gen_random_uuid() is core since Postgres 13, so
+-- pgcrypto is not required.
+create schema if not exists extensions;
+create extension if not exists postgis with schema extensions;
+
+-- Resolve PostGIS types/functions for the rest of this script.
+set search_path = public, extensions;
 
 -- -----------------------------------------------------------------------------
 -- Enums
@@ -26,7 +34,8 @@ exception when duplicate_object then null; end $$;
 -- -----------------------------------------------------------------------------
 -- updated_at trigger helper
 -- -----------------------------------------------------------------------------
-create or replace function set_updated_at() returns trigger language plpgsql as $$
+create or replace function set_updated_at() returns trigger language plpgsql
+set search_path = public, pg_temp as $$
 begin
   new.updated_at = now();
   return new;
@@ -133,7 +142,8 @@ create trigger property_scans_set_updated_at before update on property_scans
   for each row execute function set_updated_at();
 
 -- Backfill parcel_id from APN when a scan arrives before the client resolved it.
-create or replace function property_scans_resolve_parcel() returns trigger language plpgsql as $$
+create or replace function property_scans_resolve_parcel() returns trigger language plpgsql
+set search_path = public, pg_temp as $$
 begin
   if new.parcel_id is null then
     select id into new.parcel_id from parcels where apn = new.apn;
@@ -191,7 +201,8 @@ create trigger dossiers_set_updated_at before update on dossiers
 -- dossiers.version — assigned in the database so concurrent pipeline runs for
 -- the same parcel cannot both compute max+1 and collide on unique(parcel_id, version).
 -- =============================================================================
-create or replace function dossiers_assign_version() returns trigger language plpgsql as $$
+create or replace function dossiers_assign_version() returns trigger language plpgsql
+set search_path = public, pg_temp as $$
 begin
   -- Serialize per parcel; the advisory lock is released at transaction end.
   perform pg_advisory_xact_lock(hashtext(new.parcel_id::text));
@@ -233,7 +244,7 @@ returns table (
 )
 language sql stable
 security definer
-set search_path = public, pg_temp
+set search_path = public, extensions, pg_temp
 as $$
   select
     p.id,

@@ -164,6 +164,9 @@ create table if not exists dossiers (
   compliance_log     jsonb not null default '[]'::jsonb,
   compliance_passed  boolean not null default false,
 
+  -- Pipeline errors (e.g. vision call failed). Non-empty => status is compliance_hold.
+  errors             jsonb not null default '[]'::jsonb,
+
   report_markdown    text,
   report_html        text,
   model_versions     jsonb not null default '{}'::jsonb,            -- {vision: 'gpt-...', firewall: 'rules-v1', ...}
@@ -185,14 +188,37 @@ create trigger dossiers_set_updated_at before update on dossiers
   for each row execute function set_updated_at();
 
 -- =============================================================================
--- RPC: parcels_in_bbox — lightweight map payload for the mobile client
+-- dossiers.version — assigned in the database so concurrent pipeline runs for
+-- the same parcel cannot both compute max+1 and collide on unique(parcel_id, version).
 -- =============================================================================
+create or replace function dossiers_assign_version() returns trigger language plpgsql as $$
+begin
+  -- Serialize per parcel; the advisory lock is released at transaction end.
+  perform pg_advisory_xact_lock(hashtext(new.parcel_id::text));
+  select coalesce(max(version), 0) + 1 into new.version from dossiers where parcel_id = new.parcel_id;
+  return new;
+end $$;
+
+drop trigger if exists dossiers_assign_version on dossiers;
+create trigger dossiers_assign_version before insert on dossiers
+  for each row execute function dossiers_assign_version();
+
+-- =============================================================================
+-- RPC: parcels_in_bbox — lightweight map payload for the mobile client.
+--
+-- security definer: the function reads property_scans across all agents (so the
+-- map can show "already scanned" rings) while the table's own RLS keeps agents
+-- from reading each other's scan rows directly. It exposes only the scan status.
+-- No equity-based cap: the client decides what to draw at a given zoom.
+-- =============================================================================
+create index if not exists property_scans_parcel_captured_idx on property_scans (parcel_id, captured_at desc);
+
 create or replace function parcels_in_bbox(
   min_lon double precision,
   min_lat double precision,
   max_lon double precision,
   max_lat double precision,
-  max_rows integer default 500
+  max_rows integer default 5000
 )
 returns table (
   id                  uuid,
@@ -205,7 +231,10 @@ returns table (
   lot_area_sqft       numeric,
   latest_scan_status  scan_status
 )
-language sql stable as $$
+language sql stable
+security definer
+set search_path = public, pg_temp
+as $$
   select
     p.id,
     p.apn,
@@ -215,18 +244,52 @@ language sql stable as $$
     p.estimated_equity,
     p.zoning_code,
     p.lot_area_sqft,
-    (select s.status from property_scans s
-      where s.parcel_id = p.id order by s.captured_at desc limit 1) as latest_scan_status
+    s.status as latest_scan_status
   from parcels p
+  left join lateral (
+    select ps.status from property_scans ps
+    where ps.parcel_id = p.id
+    order by ps.captured_at desc
+    limit 1
+  ) s on true
   where p.centroid && st_makeenvelope(min_lon, min_lat, max_lon, max_lat, 4326)
-  order by p.estimated_equity desc nulls last
-  limit max_rows;
+  order by p.apn
+  limit least(greatest(max_rows, 1), 5000);
 $$;
 
+revoke all on function parcels_in_bbox(double precision, double precision, double precision, double precision, integer) from public, anon;
+grant execute on function parcels_in_bbox(double precision, double precision, double precision, double precision, integer) to authenticated, service_role;
+
 -- =============================================================================
--- Row Level Security — service role (backend) bypasses; app users are authenticated.
--- Tighten before any multi-tenant rollout.
+-- Privileges & Row Level Security
+--
+-- Threat model: the mobile app ships the anon key. Anyone who extracts it can
+-- obtain an `authenticated` JWT if anonymous sign-ins are enabled, so
+-- "authenticated" must never mean "trusted". Rules:
+--   * anon gets nothing.
+--   * authenticated agents see parcel PUBLIC-RECORD columns only; owner name,
+--     mailing address, and the raw assessor blob are reachable only via the
+--     service role (backend).
+--   * agents read/write only their own scans and their own storage objects.
+--   * dossiers are readable by agents; writes are backend-only.
+-- Supabase grants ALL on new public tables to anon/authenticated by default, so
+-- the revokes below are load-bearing.
 -- =============================================================================
+revoke all on parcels, property_scans, dossiers from anon, authenticated;
+
+-- Column-level grant: everything except owner PII and the raw assessor blob.
+grant select (
+  id, apn, situs_address, situs_city, situs_zip, jurisdiction, zoning_code, zoning_desc,
+  land_use_code, lot_area_sqft, year_built, living_area_sqft, owner_occupied,
+  assessed_land_value, assessed_improvement_value, assessed_total_value, tax_year,
+  last_sale_date, last_sale_price, estimated_market_value, estimated_equity,
+  equity_confidence, equity_model_version, centroid, source, source_ingested_at,
+  created_at, updated_at
+) on parcels to authenticated;
+
+grant select, insert, update on property_scans to authenticated;
+grant select on dossiers to authenticated;
+
 alter table parcels         enable row level security;
 alter table property_scans  enable row level security;
 alter table dossiers        enable row level security;
@@ -236,23 +299,28 @@ create policy "parcels readable by authenticated" on parcels
   for select to authenticated using (true);
 
 drop policy if exists "scans readable by authenticated" on property_scans;
-create policy "scans readable by authenticated" on property_scans
-  for select to authenticated using (true);
+drop policy if exists "scans readable by owner" on property_scans;
+create policy "scans readable by owner" on property_scans
+  for select to authenticated using (captured_by = (select auth.uid()));
 
 drop policy if exists "scans insertable by owner" on property_scans;
 create policy "scans insertable by owner" on property_scans
-  for insert to authenticated with check (captured_by = auth.uid() or captured_by is null);
+  for insert to authenticated with check (captured_by = (select auth.uid()));
 
 drop policy if exists "scans updatable by owner" on property_scans;
 create policy "scans updatable by owner" on property_scans
-  for update to authenticated using (captured_by = auth.uid());
+  for update to authenticated
+  using (captured_by = (select auth.uid()))
+  with check (captured_by = (select auth.uid()));
 
 drop policy if exists "dossiers readable by authenticated" on dossiers;
 create policy "dossiers readable by authenticated" on dossiers
   for select to authenticated using (true);
 
 -- =============================================================================
--- Storage: private bucket for exterior photos / LiDAR captures
+-- Storage: private bucket for exterior photos / LiDAR captures.
+-- Objects are scoped to their uploader. The UPDATE policy is required for
+-- idempotent retries (`upsert: true` on an object that already exists).
 -- =============================================================================
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('property-scans', 'property-scans', false, 26214400,
@@ -260,9 +328,20 @@ values ('property-scans', 'property-scans', false, 26214400,
 on conflict (id) do nothing;
 
 drop policy if exists "scan objects: authenticated upload" on storage.objects;
-create policy "scan objects: authenticated upload" on storage.objects
-  for insert to authenticated with check (bucket_id = 'property-scans');
-
 drop policy if exists "scan objects: authenticated read" on storage.objects;
-create policy "scan objects: authenticated read" on storage.objects
-  for select to authenticated using (bucket_id = 'property-scans');
+drop policy if exists "scan objects: owner insert" on storage.objects;
+drop policy if exists "scan objects: owner select" on storage.objects;
+drop policy if exists "scan objects: owner update" on storage.objects;
+
+create policy "scan objects: owner insert" on storage.objects
+  for insert to authenticated
+  with check (bucket_id = 'property-scans' and owner_id = (select auth.uid())::text);
+
+create policy "scan objects: owner select" on storage.objects
+  for select to authenticated
+  using (bucket_id = 'property-scans' and owner_id = (select auth.uid())::text);
+
+create policy "scan objects: owner update" on storage.objects
+  for update to authenticated
+  using (bucket_id = 'property-scans' and owner_id = (select auth.uid())::text)
+  with check (bucket_id = 'property-scans' and owner_id = (select auth.uid())::text);

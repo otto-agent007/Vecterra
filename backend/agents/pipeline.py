@@ -18,12 +18,12 @@ import argparse
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from langgraph.graph import END, StateGraph
 
-from .compliance import FIREWALL_VERSION, screen_text
+from .compliance import FIREWALL_VERSION, screen_fragments, screen_text
 from .dossier_generator import GENERATOR_VERSION, build_dossier_record, build_lead_rationale, render_html, render_markdown
 from .state import VecterraState, VisionScores
 from .zoning_rules import RULES_VERSION, evaluate_zoning
@@ -62,8 +62,16 @@ def _unknown_score() -> Dict[str, Any]:
     return {"score": None, "confidence": 0.0, "condition": "unknown", "observations": []}
 
 
-def _normalize_scores(raw: Dict[str, Any]) -> VisionScores:
+def _normalize_scores(raw: Dict[str, Any]) -> Tuple[VisionScores, List[Dict[str, Any]]]:
+    """Coerce the model's JSON into VisionScores.
+
+    Every free-text observation goes through the compliance firewall here, at
+    the point it enters state, so nothing unscreened can reach the dossier
+    row, the API response, or the report. Blocked observations are dropped and
+    the findings are returned for the compliance log.
+    """
     out: Dict[str, Any] = {}
+    findings: List[Dict[str, Any]] = []
     for key in ("roof", "paint", "structure", "overall"):
         item = raw.get(key) or {}
         score = item.get("score")
@@ -78,9 +86,11 @@ def _normalize_scores(raw: Dict[str, Any]) -> VisionScores:
         cond = str(item.get("condition", "unknown")).lower()
         if cond not in {"excellent", "good", "fair", "poor", "unknown"}:
             cond = "unknown"
-        obs = [str(o)[:200] for o in (item.get("observations") or [])][:6]
+        raw_obs = [str(o)[:200] for o in (item.get("observations") or [])][:6]
+        obs, found = screen_fragments(raw_obs)
+        findings.extend({**f, "source": f"vision.{key}"} for f in found)
         out[key] = {"score": score, "confidence": conf, "condition": cond, "observations": obs}
-    return out  # type: ignore[return-value]
+    return out, findings  # type: ignore[return-value]
 
 
 # =============================================================================
@@ -94,10 +104,11 @@ def vision_scorer_node(state: VecterraState) -> Dict[str, Any]:
 
     if not urls:
         log.warning("No images for parcel %s; emitting unknown scores", state.get("parcel", {}).get("apn"))
-        scores = _normalize_scores({})
+        scores, _ = _normalize_scores({})
         scores["model"] = "none"
         scores["image_count"] = 0
-        return {"vision_scores": scores, "errors": errors, "model_versions": {**versions, "vision": "none"}}
+        errors.append("vision_scorer: no images available for this parcel")
+        return {"vision_scores": scores, "errors": errors, "model_versions": {**versions, "vision": "none"}, "vision_findings": []}
 
     try:
         from openai import OpenAI
@@ -115,20 +126,24 @@ def vision_scorer_node(state: VecterraState) -> Dict[str, Any]:
             ],
         )
         raw = json.loads(resp.choices[0].message.content or "{}")
-        scores = _normalize_scores(raw)
-        scores["raw"] = raw
+        scores, vision_findings = _normalize_scores(raw)
+        # The raw model reply is intentionally NOT kept in state: it is the one
+        # channel the firewall has not screened.
         scores["model"] = VISION_MODEL
         scores["image_count"] = len(urls[:8])
         versions["vision"] = VISION_MODEL
-    except Exception as exc:  # network, auth, JSON — degrade gracefully
+        if vision_findings:
+            log.warning("Firewall dropped %d vision observation(s) for APN %s",
+                        sum(1 for f in vision_findings if f["severity"] == "block"), state.get("parcel", {}).get("apn"))
+    except Exception as exc:  # network, auth, JSON — degrade gracefully, but record it
         log.exception("Vision scoring failed")
-        errors.append(f"vision_scorer: {exc}")
-        scores = _normalize_scores({})
+        errors.append(f"vision_scorer: {type(exc).__name__}: {exc}")
+        scores, vision_findings = _normalize_scores({})
         scores["model"] = VISION_MODEL
         scores["image_count"] = len(urls)
         versions["vision"] = f"{VISION_MODEL} (failed)"
 
-    return {"vision_scores": scores, "errors": errors, "model_versions": versions}
+    return {"vision_scores": scores, "errors": errors, "model_versions": versions, "vision_findings": vision_findings}
 
 
 def zoning_analyzer_node(state: VecterraState) -> Dict[str, Any]:
@@ -157,10 +172,13 @@ def compliance_firewall_node(state: VecterraState) -> Dict[str, Any]:
                     len(result.blocked), state.get("parcel", {}).get("apn"))
     html = render_html(result.text, apn=state["parcel"].get("apn", ""), firewall_version=result.firewall_version)
     versions = {**(state.get("model_versions") or {}), "firewall": FIREWALL_VERSION}
+    # Findings from screening vision observations at ingestion time are part of
+    # the audit trail even though they never reached the Markdown.
+    vision_findings = state.get("vision_findings") or []
     return {
         "final_markdown": result.text,
         "final_html": html,
-        "compliance_log": result.as_log(),
+        "compliance_log": vision_findings + result.as_log(),
         "compliance_passed": result.passed,
         "model_versions": versions,
     }

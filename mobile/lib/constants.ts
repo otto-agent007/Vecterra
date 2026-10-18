@@ -37,3 +37,16 @@ export function formatSqft(v: number | null | undefined): string {
   if (v == null) return '—';
   return `${Math.round(v).toLocaleString('en-US')} sq ft`;
 }
+
+/**
+ * Columns the `authenticated` role may read from `parcels`. The schema grants
+ * column-level SELECT only — owner name, mailing address and the raw assessor
+ * blob are backend-only — so `select('*')` is rejected by PostgREST. Keep this
+ * in sync with the GRANT in backend/ingestion/schema.sql.
+ */
+export const PARCEL_PUBLIC_COLUMNS =
+  'id,apn,situs_address,situs_city,situs_zip,jurisdiction,zoning_code,zoning_desc,' +
+  'land_use_code,lot_area_sqft,year_built,living_area_sqft,owner_occupied,' +
+  'assessed_land_value,assessed_improvement_value,assessed_total_value,tax_year,' +
+  'last_sale_date,last_sale_price,estimated_market_value,estimated_equity,' +
+  'equity_confidence,equity_model_version,source,source_ingested_at,created_at,updated_at';

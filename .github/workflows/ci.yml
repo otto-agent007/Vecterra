@@ -29,10 +29,42 @@ jobs:
         run: python -m compileall -q ingestion agents api
       - name: Run tests
         run: pytest -q
+        env:
+          VECTERRA_ENV: dev
       - name: Pipeline smoke test (no network, no LLM)
         run: python -m agents.pipeline --demo > /dev/null
+        env:
+          VECTERRA_ENV: dev
       - name: Ingestion smoke test (GeoPandas dry run on sample fixture)
         run: python ingestion/load_parcels.py --input ingestion/sample_parcels.geojson --zip 92029 --dry-run
+
+  schema:
+    name: Schema (PostGIS apply + RLS assertions)
+    runs-on: ubuntu-latest
+    services:
+      postgis:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vecterra_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install psql
+        run: sudo apt-get update -q && sudo apt-get install -y -q postgresql-client
+      - name: Apply schema and run RLS assertions
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/vecterra_test
+        run: backend/tests/sql/run.sh
+      - name: Schema is idempotent (re-apply)
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/vecterra_test
+        run: backend/tests/sql/run.sh
 
   mobile:
     name: Mobile (typecheck + expo-doctor)

@@ -78,6 +78,11 @@ async function uploadFile(localUri: string, objectPath: string, contentType: str
 
 async function uploadScan(scan: QueuedScan): Promise<void> {
   const userId = await ensureSession();
+  if (!userId) {
+    // RLS requires captured_by = auth.uid(); without a session the insert
+    // would be rejected anyway. Keep the scan queued until the agent signs in.
+    throw new Error('not signed in');
+  }
 
   const imagePaths: string[] = [];
   for (let i = 0; i < scan.photos.length; i++) {

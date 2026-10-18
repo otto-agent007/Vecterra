@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -23,13 +24,28 @@ log = logging.getLogger("vecterra.api")
 
 app = FastAPI(title="Vecterra API", version="0.1.0")
 
-API_TOKEN = os.getenv("VECTERRA_API_TOKEN")  # shared secret for MVP; replace with Supabase JWT verification
+# Shared-secret auth for the MVP (replace with Supabase JWT verification).
+# Fails CLOSED: the process refuses to start without a token unless the
+# operator explicitly opts into dev mode. A missing or typo'd env var in
+# production must not silently expose the LLM budget and dossier writes.
+API_TOKEN = os.getenv("VECTERRA_API_TOKEN") or ""
+DEV_MODE = os.getenv("VECTERRA_ENV", "production").lower() in {"dev", "development", "local"}
+_PLACEHOLDER_TOKENS = {"", "change-me", "changeme", "todo", "secret"}
+
+if API_TOKEN.strip().lower() in _PLACEHOLDER_TOKENS and not DEV_MODE:
+    raise RuntimeError(
+        "VECTERRA_API_TOKEN is unset or a placeholder. Set a real token, or set "
+        "VECTERRA_ENV=dev to run without auth on a local machine."
+    )
+if DEV_MODE and not API_TOKEN:
+    log.warning("VECTERRA_ENV=dev and no VECTERRA_API_TOKEN: API auth is DISABLED")
 
 
 def _auth(authorization: Optional[str]) -> None:
-    if not API_TOKEN:
-        return  # auth disabled in local dev
-    if authorization != f"Bearer {API_TOKEN}":
+    if DEV_MODE and not API_TOKEN:
+        return
+    expected = f"Bearer {API_TOKEN}"
+    if not authorization or not secrets.compare_digest(authorization.encode(), expected.encode()):
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
@@ -41,6 +57,7 @@ class RunRequest(BaseModel):
 
 class RunResponse(BaseModel):
     compliance_passed: bool
+    errors: List[str]
     dossier_id: Optional[str] = None
     version: Optional[int] = None
     status: Optional[str] = None
@@ -48,7 +65,6 @@ class RunResponse(BaseModel):
     zoning_analysis: Dict[str, Any]
     compliance_log: List[Dict[str, Any]]
     report_markdown: str
-    errors: List[str]
 
 
 class SupabaseWebhook(BaseModel):
@@ -71,7 +87,8 @@ def run(req: RunRequest, authorization: Optional[str] = Header(None)) -> RunResp
     try:
         inputs = load_inputs_for_scan(req.scan_id) if req.scan_id else load_inputs_for_apn(req.apn or "")
     except Exception as exc:
-        raise HTTPException(status_code=404, detail=f"could not load inputs: {exc}") from exc
+        log.warning("could not load pipeline inputs (scan_id=%s apn=%s): %s", req.scan_id, req.apn, exc)
+        raise HTTPException(status_code=404, detail="scan or parcel not found") from exc
 
     state = run_pipeline(inputs["parcel"], inputs["scan"], inputs["image_urls"])
     row = persist_dossier(state) if req.persist else None

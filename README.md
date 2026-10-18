@@ -112,7 +112,7 @@ curl -X POST localhost:8000/pipeline/run -H 'content-type: application/json' -d 
 
 ## 3. Mobile
 
-Expo SDK 58 · React Native 0.88 · Expo Router · TypeScript.
+Expo SDK 58 · React Native 0.88 · Expo Router · TypeScript. Requires **Node 22.13+** (`mobile/.nvmrc`; `nvm use` picks it up).
 
 ```bash
 cd mobile

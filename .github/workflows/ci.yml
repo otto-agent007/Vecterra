@@ -79,7 +79,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: mobile/.nvmrc
           cache: npm
           cache-dependency-path: mobile/package-lock.json
       - name: Install dependencies

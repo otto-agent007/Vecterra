@@ -46,7 +46,6 @@ jobs:
         image: postgis/postgis:16-3.4
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: vecterra_test
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres"
@@ -57,6 +56,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install psql
         run: sudo apt-get update -q && sudo apt-get install -y -q postgresql-client
+      # The postgis image pre-installs PostGIS into `public` of its default DB.
+      # Supabase installs it into `extensions`, so test on a clean template0 DB.
+      - name: Create clean test database
+        run: psql postgres://postgres:postgres@localhost:5432/postgres -c "create database vecterra_test template template0"
       - name: Apply schema and run RLS assertions
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/vecterra_test

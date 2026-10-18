@@ -3,8 +3,9 @@
 -- PostGIS Postgres in CI. Mirrors Supabase's role model and default grants.
 -- NOT for use against a real Supabase project.
 
-create extension if not exists postgis;
-create extension if not exists pgcrypto;
+-- Mirror Supabase: extensions live in the `extensions` schema, which the API
+-- roles can use. schema.sql then installs PostGIS there itself.
+create schema if not exists extensions;
 
 -- Roles -----------------------------------------------------------------------
 do $$ begin
@@ -13,6 +14,8 @@ do $$ begin
   if not exists (select 1 from pg_roles where rolname = 'service_role')  then create role service_role nologin bypassrls; end if;
 end $$;
 grant usage on schema public to anon, authenticated, service_role;
+grant usage on schema extensions to anon, authenticated, service_role;
+alter default privileges in schema extensions grant execute on functions to anon, authenticated, service_role;
 
 -- Supabase's default privileges: every new public table/function is granted to all three roles.
 alter default privileges in schema public grant all on tables to anon, authenticated, service_role;

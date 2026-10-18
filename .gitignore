@@ -1,0 +1,31 @@
+# Secrets
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Node / Expo
+node_modules/
+.expo/
+dist/
+ios/
+android/
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+expo-env.d.ts
+
+# Data (large GIS extracts stay out of git)
+backend/data/
+*.shp
+*.shx
+*.dbf
+*.gpkg
+
+# OS
+.DS_Store

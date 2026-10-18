@@ -1,0 +1,43 @@
+{
+  "expo": {
+    "name": "Vecterra",
+    "slug": "vecterra",
+    "version": "0.1.0",
+    "scheme": "vecterra",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "com.vecterra.field",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Vecterra uses the camera to photograph property exteriors from public vantage points.",
+        "NSLocationWhenInUseUsageDescription": "Vecterra tags each capture with the location it was taken from.",
+        "NSPhotoLibraryAddUsageDescription": "Vecterra can save capture copies to your photo library."
+      },
+      "config": { "googleMapsApiKey": "" }
+    },
+    "android": {
+      "package": "com.vecterra.field",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
+      ],
+      "config": { "googleMaps": { "apiKey": "" } }
+    },
+    "plugins": [
+      "expo-router",
+      ["expo-camera", { "cameraPermission": "Allow Vecterra to photograph property exteriors." }],
+      ["expo-location", { "locationWhenInUsePermission": "Allow Vecterra to tag captures with your location." }]
+    ],
+    "experiments": { "typedRoutes": true },
+    "extra": {
+      "studyArea": {
+        "name": "Harmony Grove, Escondido CA",
+        "zip": "92029",
+        "center": { "latitude": 33.0935, "longitude": -117.1175 }
+      }
+    }
+  }
+}

@@ -60,3 +60,17 @@ export const PARCEL_PUBLIC_COLUMNS =
   'assessed_land_value,assessed_improvement_value,assessed_total_value,tax_year,' +
   'last_sale_date,last_sale_price,estimated_market_value,estimated_equity,' +
   'equity_confidence,equity_model_version,source,source_ingested_at,created_at,updated_at';
+
+/** Brand palette sampled from assets/brand/vecterra-logo-source.png. */
+export const BRAND = {
+  background: '#000007', // logo canvas — splash, sign-in, icon background
+  surface: '#0b0d1f',
+  border: '#24284f',
+  blue: '#28a1fc',
+  indigo: '#3b4bff', // primary action
+  violet: '#7c3aed',
+  text: '#e8ebff',
+  textMuted: '#8b90b8',
+  wordmark: '#cdd5fc',
+  danger: '#ff6b81',
+} as const;

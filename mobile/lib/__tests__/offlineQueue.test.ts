@@ -1,3 +1,4 @@
+/// <reference types="jest" />
 /**
  * Offline queue invariants. All platform modules are mocked; this exercises
  * the mutex, per-photo upload state, backoff, and transient-vs-rejection logic.

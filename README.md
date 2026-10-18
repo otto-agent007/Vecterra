@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="mobile/assets/brand/vecterra-logo.png" alt="Vecterra" width="300">
+</p>
+
 # Vecterra — Spatial & Structural Equity Engine (MVP)
 
 [![CI](https://github.com/otto-agent007/Vecterra/actions/workflows/ci.yml/badge.svg)](https://github.com/otto-agent007/Vecterra/actions/workflows/ci.yml)
@@ -108,13 +112,16 @@ curl -X POST localhost:8000/pipeline/run -H 'content-type: application/json' -d 
 
 ## 3. Mobile
 
+Expo SDK 58 · React Native 0.88 · Expo Router · TypeScript. Requires **Node 22.13+** (`mobile/.nvmrc`; `nvm use` picks it up).
+
 ```bash
 cd mobile
 npm install
-npx expo install --fix          # align native module versions with the installed SDK
 cp .env.example .env            # EXPO_PUBLIC_SUPABASE_URL / EXPO_PUBLIC_SUPABASE_ANON_KEY
-npx expo run:ios                # dev client (react-native-maps + camera need native code; Expo Go won't do)
+npx expo start                  # scan the QR code with the Expo Go app (iPhone: Camera app)
 ```
+
+Everything except LiDAR runs in **Expo Go** (map, camera, location, offline queue). LiDAR needs the native module described in `lib/lidar.ts`, which means a development build: `npx expo run:ios` (Xcode) or an EAS build. Expo Go from the App Store only supports the latest SDK; after an SDK bump, update with `npx expo install expo@latest && npx expo install --fix`.
 
 * **Sign-in** with a field-agent email/password account (Supabase Auth). The root layout guards every other route. Dev builds with `EXPO_PUBLIC_ALLOW_ANON_AUTH=true` get an anonymous shortcut; release builds never do.
 * **Map** opens on Harmony Grove (33.0935, −117.1175). The **whole study area** is fetched once via `parcels_in_bbox` and cached on-device; panning filters client-side, so the map is identical with or without signal (a banner shows the cache timestamp when offline). Markers are colored by modeled equity tier, ringed white when a scan exists, and drawn only below `MARKER_MAX_LAT_DELTA` zoom. Tapping shows the summary, then the cached row, then the live row — stale responses can never overwrite newer ones.

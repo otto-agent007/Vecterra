@@ -34,8 +34,10 @@ _MD_TEMPLATE = """\
 {% for key, label in [("roof","Roof"),("paint","Paint & Siding"),("structure","Structure & Upkeep"),("overall","Overall")] -%}
 | {{ label }} | {{ scores[key].score if scores[key].score is not none else "—" }} | {{ scores[key].condition }} | {{ "%.0f%%"|format(scores[key].confidence * 100) if scores[key].confidence is not none else "—" }} |
 {% endfor %}
+
 {% if observations %}
 **Observations**
+
 {% for o in observations %}
 - {{ o }}
 {% endfor %}
@@ -50,10 +52,12 @@ _No exterior photographs were available for this parcel; condition scores are pl
 - **Estimated primary-structure footprint:** {{ "{:,} sq ft".format(zoning.estimated_primary_footprint_sqft) }}
 - **Estimated remaining buildable area (after setbacks):** {{ "{:,} sq ft".format(zoning.estimated_buildable_remaining_sqft) }}
 - **ADU feasibility:** **{{ zoning.feasibility|capitalize }}** ({{ zoning.feasibility_score }}/100)
-  - State floor allows an ADU of at least {{ zoning.adu.by_right_min_sqft }} sq ft on residential lots with {{ zoning.adu.side_rear_setback_ft }} ft side/rear setbacks.
-  - Local detached cap (to verify): {{ zoning.adu.max_detached_sqft }} sq ft; JADU up to {{ zoning.adu.jadu_max_sqft }} sq ft.
+    - State floor allows an ADU of at least {{ zoning.adu.by_right_min_sqft }} sq ft on residential lots with {{ zoning.adu.side_rear_setback_ft }} ft side/rear setbacks.
+    - Local detached cap (to verify): {{ zoning.adu.max_detached_sqft }} sq ft; JADU up to {{ zoning.adu.jadu_max_sqft }} sq ft.
+
 {% if zoning.caveats %}
 **Caveats**
+
 {% for c in zoning.caveats %}
 - {{ c }}
 {% endfor %}

@@ -50,7 +50,8 @@ def test_ab956_switches_on_jan_1_2027_and_overrides_unupdated_local_rules():
     assert before["adu"]["max_detached_units"] == 1
     assert _rules(before)["two_detached"]["status"] == "upcoming"
     assert after["adu"]["max_detached_units"] == 2
-    assert _rules(after)["two_detached"]["status"] == "verify"  # final text not yet reviewed
+    assert _rules(after)["two_detached"]["status"] == "settled"  # chaptered: Ch. 791, Stats. 2026
+    assert "Ch. 791" in _rules(after)["two_detached"]["source"]
     conflicts = {c["key"]: c for c in after["rule_layers"]["conflicts"]}
     assert conflicts["detached_units"]["status"] == "resolved"
     assert "State law applies" in conflicts["detached_units"]["resolution"]
@@ -72,12 +73,25 @@ def test_state_floor_supersedes_a_local_cap_that_is_too_low():
     assert conflicts[0].status == "resolved" and "State minimum applies" in conflicts[0].resolution
 
 
-def test_local_cap_within_state_bounds_is_kept_and_disagreeing_sources_are_flagged():
-    z = evaluate_zoning(CITY, as_of=BEFORE)
-    assert z["adu"]["max_detached_sqft"] == 1000
-    conflicts = {c["key"]: c for c in z["rule_layers"]["conflicts"]}
-    assert conflicts["detached_cap_sources"]["status"] == "sources_disagree"
-    assert _rules(z)["detached_cap"]["status"] == "verify"
+def test_disagreeing_sources_are_flagged_until_confirmed():
+    unsure = {**LOCAL_AUTHORITIES["city_of_escondido"], "detached_cap_status": "verify",
+              "detached_cap_note": "City says 1,000 sq ft; a builder says 1,200"}
+    numbers, conflicts = resolve_numbers(unsure, BEFORE)
+    assert numbers["detached_cap_sqft"] == 1000 and numbers["detached_cap_status"] == "verify"
+    assert conflicts[0].key == "detached_cap_sources" and conflicts[0].status == "sources_disagree"
+
+
+def test_verified_local_caps_come_from_the_published_codes():
+    city = _rules(evaluate_zoning(CITY, as_of=BEFORE))["detached_cap"]  # 22,000 sq ft lot, R-1-20
+    assert city["status"] == "settled" and "§ 33-1474" in city["source"]
+    assert city["statement"] == ("Caps a detached ADU at 1,000 sq ft and allows it up to 35 ft tall (the R-1 zone's limit), "
+                                 "with 4 ft side and rear setbacks and the zone's usual front setback.")
+    small = _rules(evaluate_zoning({**CITY, "lot_area_sqft": 7500}, as_of=BEFORE))["detached_cap"]
+    assert "850 sq ft for one bedroom or less" in small["statement"]
+    county = _rules(evaluate_zoning(COUNTY, as_of=BEFORE))["detached_cap"]
+    assert county["status"] == "settled" and "PDS-611" in county["source"]
+    assert county["statement"] == "Caps a detached ADU at 1,200 sq ft and allows it up to 24 ft tall."
+    assert not evaluate_zoning(CITY, as_of=BEFORE)["rule_layers"]["conflicts"]
 
 
 def test_overlays_stack_and_state_voids_hoa_bans():
@@ -168,3 +182,52 @@ def test_hostile_overlay_names_are_neutralized():
     assert "<script>x()" not in html and "<b>FD</b>" not in html
     md = render_markdown(hostile, {}, z, {})
     assert "[click](javascript" not in md
+
+
+def test_jan_2027_jadu_and_hoa_changes():
+    before, after = _rules(evaluate_zoning(CITY, as_of=BEFORE)), _rules(evaluate_zoning(CITY, as_of=AFTER))
+    assert "doesn't have to approve a junior ADU as well" in before["two_detached"]["statement"]
+    assert "doesn't have to approve a junior ADU" not in before["jadu"]["statement"]
+    assert after["jadu"]["status"] == "settled"
+    assert "doesn't have to approve a junior ADU as well" in after["jadu"]["statement"]
+    assert "AB 956" in after["jadu"]["source"]
+    # HOA: flagged as coming up before 2027, folded into the HOA rule after.
+    assert before["hoa_planned_dev"]["status"] == "upcoming"
+    assert before["hoa_planned_dev"]["authority"] == "Example Glen Association"
+    assert "planned developments" not in before["hoa_review"]["statement"]
+    assert "hoa_planned_dev" not in after
+    assert "including planned developments" in after["hoa_review"]["statement"]
+    assert "AB 956" in after["hoa_review"]["source"] and "Civil Code § 4751" in after["hoa_review"]["source"]
+    # No HOA on the lot: no HOA items at all.
+    assert "hoa_planned_dev" not in _rules(evaluate_zoning(COUNTY, as_of=BEFORE))
+
+
+def test_pre2020_units_can_be_permitted_with_published_proof_types():
+    city = _rules(evaluate_zoning(CITY, as_of=BEFORE))["pre2020_adu"]
+    assert city["layer"] == "state" and city["status"] == "verify"
+    assert city["confirm_with"] == "City of Escondido"
+    assert city["statement"].startswith("If a guest unit on this lot was built before 2020")
+    assert "City of Escondido can't refuse" in city["statement"]
+    assert "dated photos or aerial images" in city["statement"]
+    assert "unpermitted" not in city["statement"].lower()
+    assert "§ 66332" in city["source"]
+    county = _rules(evaluate_zoning(COUNTY, as_of=BEFORE))["pre2020_adu"]
+    assert county["confirm_with"] == "County of San Diego"
+    unknown = _rules(evaluate_zoning({"jurisdiction": "unknown", "lot_area_sqft": 50000}, as_of=BEFORE))["pre2020_adu"]
+    assert unknown["confirm_with"] is None and "The local authority can't refuse" in unknown["statement"]
+    assert "pre2020_adu" not in _rules(evaluate_zoning(CITY, as_of=date(2024, 6, 1)))
+    assert "pre2020_adu" not in _rules(evaluate_zoning({**COUNTY, "zoning_code": "M54"}, as_of=BEFORE))
+
+
+def test_escondido_height_follows_the_zone():
+    small = _rules(evaluate_zoning({**CITY, "zoning_code": "R-1-7", "lot_area_sqft": 7500}, as_of=BEFORE))["detached_cap"]
+    assert small["statement"] == ("Caps a detached ADU at 1,000 sq ft (850 sq ft for one bedroom or less, because this lot "
+                                  "is under 20,000 sq ft) and allows it up to 35 ft tall (the R-1 zone's limit), with 4 ft "
+                                  "side and rear setbacks and the zone's usual front setback.")
+    for code in ("R-E", "RE-20", "R-A"):
+        estate = _rules(evaluate_zoning({**CITY, "zoning_code": code}, as_of=BEFORE))["detached_cap"]
+        assert f"(the {code[:1]}-{code[1:].lstrip('-')[:1]} zone's limit)" in estate["statement"], code
+    other = _rules(evaluate_zoning({**CITY, "zoning_code": "PD-R"}, as_of=BEFORE))["detached_cap"]
+    assert "up to the zone's height limit, never less than 16 ft" in other["statement"]
+    county = _rules(evaluate_zoning(COUNTY, as_of=BEFORE))["detached_cap"]
+    assert "setbacks" not in county["statement"]  # County setbacks not encoded yet

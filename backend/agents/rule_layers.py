@@ -34,16 +34,18 @@ project docs (research/*.md). This is a working model of the law, not legal advi
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from typing import Any, Dict, List, Optional
 
-LAYERS_VERSION = "rule-layers-v1"
+LAYERS_VERSION = "rule-layers-v1.1"
 
 # Layer keys, in precedence order, with the homeowner-facing group label.
 LAYER_ORDER = ("state", "local", "fire", "septic", "hoa")
 
 AB956_EFFECTIVE = date(2027, 1, 1)
+AB2533_EFFECTIVE = date(2025, 1, 1)
 SB543_AB1154_EFFECTIVE = date(2026, 1, 1)
 ENERGY_CODE_2025_EFFECTIVE = date(2026, 1, 1)
 UPCOMING_WINDOW_DAYS = 456  # show enacted changes up to ~15 months ahead
@@ -63,8 +65,12 @@ STATE_FLOOR = {
 SRC = {
     "state_adu": ("California ADU law, Gov. Code §§ 66310–66342 (HCD ADU Handbook)",
                   "https://www.hcd.ca.gov/policy-and-research/accessory-dwelling-units"),
-    "ab956": ("AB 956 (2026), signed Sep 29, 2026; effective Jan 1, 2027",
+    "ab956": ("AB 956 (Ch. 791, Stats. 2026), signed Sep 29, 2026; effective Jan 1, 2027",
               "https://leginfo.legislature.ca.gov/faces/billNavClient.xhtml?bill_id=202520260AB956"),
+    "civ4751_ab956": ("Civil Code § 4751, as amended by AB 956 (Ch. 791, Stats. 2026)",
+                      "https://leginfo.legislature.ca.gov/faces/billNavClient.xhtml?bill_id=202520260AB956"),
+    "gov66332": ("Gov. Code § 66332 (AB 2533, 2024). Proof lists published by the City of San Diego (IB 242), "
+                 "Napa County and Riverside", "https://california.public.law/codes/government_code_section_66332"),
     "sb543_ab1154": ("SB 543 and AB 1154 (2025), effective Jan 1, 2026",
                      "https://bbklaw.com/resources/la-110725-governor-newsom-signs-four-new-accessory-dwelling-unit-bills"),
     "civ4751": ("Civil Code § 4751", "https://california.public.law/codes/civil_code_section_4751"),
@@ -80,6 +86,10 @@ SRC = {
     "deh_septic": ("County DEH ADU / second dwelling FAQ",
                    "https://www.sandiegocounty.gov/content/dam/sdc/deh/lwqd/ADU%20Second%20Dwellings%20FAQ%20Revised%20020121.pdf"),
     "county_adu": ("County of San Diego PDS ADU page", "https://www.sandiegocounty.gov/content/sdc/pds/bldg/adu.html"),
+    "county_pds611": ("County of San Diego ADU handout PDS-611 (Rev. 3/11/2022) and PDS ADU page",
+                      "https://sandiegocounty.gov/content/dam/sdc/pds/zoning/PDS-PLN-611.pdf"),
+    "esc_33_1474": ("Escondido Zoning Code § 33-1474, Table 33-1474 (Ord. 2023-15); zone heights in Table 33-107",
+                    "https://gocodebook.com/library/us/ca/escondido-zoning/division-9-zoning-administrator/article-70-accessory-dwelling-units-and-junior-accessory-dwelling-units/33-1474.-development-standards"),
     "county_sb9": ("County of San Diego SB 9 page", "https://www.sandiegocounty.gov/content/sdc/pds/zoninghome/sb9home.html"),
     "hcd_burbank": ("HCD technical assistance letter to Burbank (Sep 2025)",
                     "https://www.hcd.ca.gov/sites/default/files/docs/planning-and-community/HAU/burbank-hau-1904-ta-091525.pdf"),
@@ -95,9 +105,13 @@ LOCAL_AUTHORITIES: Dict[str, Dict[str, Any]] = {
     "san_diego_county": {
         "name": "County of San Diego",
         "detached_cap_sqft": 1200,
-        "detached_cap_status": "verify",
+        "detached_cap_status": "settled",
         "detached_cap_note": None,
-        "detached_cap_source": "county_adu",
+        "detached_cap_source": "county_pds611",
+        "detached_height_ft": 24,
+        "zone_height_ft": None,
+        "detached_side_rear_setback_ft": None,  # PDS-611 setbacks not yet encoded
+        "small_lot_cap": None,
         "ab956_ordinance_updated": False,   # County page doesn't reflect AB 956 yet (Oct 2026)
         "states_state_law_prevails": True,  # County ADU page: state law controls where they conflict
         "preapproved_plans": None,
@@ -108,9 +122,15 @@ LOCAL_AUTHORITIES: Dict[str, Dict[str, Any]] = {
     "city_of_escondido": {
         "name": "City of Escondido",
         "detached_cap_sqft": 1000,
-        "detached_cap_status": "verify",
-        "detached_cap_note": "City materials say 1,000 sq ft; some builders cite 1,200",
-        "detached_cap_source": "esc_paadu",
+        "detached_cap_status": "settled",
+        "detached_cap_note": None,
+        "detached_cap_source": "esc_33_1474",
+        # § 33-1474(a)(7): an ADU follows the zone's height limit, and 16 ft is always allowed.
+        "detached_height_ft": None,
+        "zone_height_ft": {"R-A": 35, "R-E": 35, "R-1": 35},  # Table 33-107
+        "detached_side_rear_setback_ft": 4,  # § 33-1474(a)(4); the front setback follows the zone
+        # Table 33-1474: lots under 20,000 sq ft cap a 0-1 bedroom ADU at 850 sq ft.
+        "small_lot_cap": {"lot_under_sqft": 20000, "one_bedroom_cap_sqft": 850},
         "ab956_ordinance_updated": False,
         "states_state_law_prevails": False,
         "preapproved_plans": (484, 644, 851, 1000),
@@ -176,6 +196,15 @@ def _norm(v: Any) -> Optional[str]:
         return None
     s = str(v).strip().lower()
     return s or None
+
+
+def _zone_height(zoning_code: Any, table: Dict[str, int]) -> Optional[tuple[str, int]]:
+    """Match a zoning code to its base zone's height limit: "R-1-20" -> R-1, "RE-20" or "R-E" -> R-E."""
+    m = re.match(r"^R-?([1AE])(?:-|$)", str(zoning_code or "").strip().upper())
+    if not m:
+        return None
+    zone = f"R-{m.group(1)}"
+    return (zone, table[zone]) if zone in table else None
 
 
 def _upcoming(as_of: date, effective: date) -> bool:
@@ -270,14 +299,15 @@ def resolve_rules(
         ))
         if as_of >= AB956_EFFECTIVE:
             add(ResolvedRule(
-                key="two_detached", layer="state", authority="State law", status="verify",
+                key="two_detached", layer="state", authority="State law", status="settled",
                 statement="Allows two detached ADUs on a single-family lot; each can be limited to 800 sq ft.",
-                effective_from=AB956_EFFECTIVE.isoformat(), confirm_with=local_name, **_src("ab956"),
+                effective_from=AB956_EFFECTIVE.isoformat(), **_src("ab956"),
             ))
         elif _upcoming(as_of, AB956_EFFECTIVE):
             add(ResolvedRule(
                 key="two_detached", layer="state", authority="State law", status="upcoming",
-                statement="Starting Jan 1, 2027, allows two detached ADUs on a single-family lot instead of one.",
+                statement=("Starting Jan 1, 2027, allows two detached ADUs on a single-family lot instead of one. "
+                           "With two, the local authority doesn't have to approve a junior ADU as well."),
                 effective_from=AB956_EFFECTIVE.isoformat(), **_src("ab956"),
             ))
         jadu = f"Allows a junior ADU of up to {numbers['jadu_max_sqft']} sq ft inside the house."
@@ -286,16 +316,29 @@ def resolve_rules(
         else:
             jadu += " The owner must live on site."
         if as_of >= AB956_EFFECTIVE:
-            jadu += " With two detached ADUs, a junior ADU is at the local authority's discretion."
-        add(ResolvedRule(key="jadu", layer="state", authority="State law",
-                         status="verify" if as_of >= AB956_EFFECTIVE else "settled",
-                         statement=jadu, **_src("sb543_ab1154" if as_of >= SB543_AB1154_EFFECTIVE else "state_adu")))
+            jadu += " If two detached ADUs are built, the local authority doesn't have to approve a junior ADU as well."
+            jadu_src = "ab956"
+        else:
+            jadu_src = "sb543_ab1154" if as_of >= SB543_AB1154_EFFECTIVE else "state_adu"
+        add(ResolvedRule(key="jadu", layer="state", authority="State law", status="settled",
+                         statement=jadu, **_src(jadu_src)))
         add(ResolvedRule(
             key="impact_fees", layer="state", authority="State law", status="settled",
             statement=(f"No impact fees on an ADU of {numbers['impact_fee_free_max_sqft']} sq ft or less; above that, "
                        "fees must be in proportion to the size of the main house."),
             **_src("sb543_ab1154" if as_of >= SB543_AB1154_EFFECTIVE else "state_adu"),
         ))
+        if as_of >= AB2533_EFFECTIVE:
+            who = f"The {local_name}" if local else "The local authority"
+            add(ResolvedRule(
+                key="pre2020_adu", layer="state", authority="State law", status="verify",
+                statement=(f"If a guest unit on this lot was built before 2020 without permits, the owner can apply to permit "
+                           f"it. {who} can't refuse over code issues unless a fix is needed for health and safety, and can't "
+                           "charge impact fees. No rule defines proof of the build date; agencies that list it accept dated "
+                           "photos or aerial images, utility bills, a lease or receipts."),
+                effective_from=AB2533_EFFECTIVE.isoformat(), confirm_with=local_name if local else None,
+                **_src("gov66332"),
+            ))
         add(ResolvedRule(
             key="sprinklers", layer="state", authority="State law", status="settled",
             statement="Fire sprinklers can't be required in an ADU unless the main house is required to have them.",
@@ -316,7 +359,25 @@ def resolve_rules(
                        "so only state law is applied."),
         ))
     elif residential is not False:
-        cap_statement = f"Caps a detached ADU at {numbers['detached_cap_sqft']:,} sq ft."
+        cap_statement = f"Caps a detached ADU at {numbers['detached_cap_sqft']:,} sq ft"
+        small = local.get("small_lot_cap")
+        if small and lot_area_sqft and lot_area_sqft < small["lot_under_sqft"]:
+            cap_statement += (f" ({small['one_bedroom_cap_sqft']:,} sq ft for one bedroom or less, because this lot is under "
+                              f"{small['lot_under_sqft']:,} sq ft)")
+        zone_heights = local.get("zone_height_ft")
+        if local.get("detached_height_ft"):
+            cap_statement += f" and allows it up to {local['detached_height_ft']} ft tall"
+        elif zone_heights is not None:
+            matched = _zone_height(parcel.get("zoning_code"), zone_heights)
+            if matched:
+                cap_statement += f" and allows it up to {matched[1]} ft tall (the {matched[0]} zone's limit)"
+            else:
+                cap_statement += (" and allows it up to the zone's height limit, never less than "
+                                  f"{STATE_FLOOR['guaranteed_height_ft']} ft")
+        if local.get("detached_side_rear_setback_ft"):
+            cap_statement += (f", with {local['detached_side_rear_setback_ft']} ft side and rear setbacks and the zone's "
+                              "usual front setback")
+        cap_statement += "."
         if local.get("detached_cap_note"):
             cap_statement += f" ({local['detached_cap_note']}.)"
         add(ResolvedRule(
@@ -435,20 +496,31 @@ def resolve_rules(
     # ---- HOA overlay (stacks; state law voids bans) ---------------------------------------
     hoa = parcel.get("hoa")
     if residential is not False:
+        after_ab956 = as_of >= AB956_EFFECTIVE
+        hoa_src = "civ4751_ab956" if after_ab956 else "civ4751"
+        reach = (" That applies on any lot zoned to allow a single-family home, including planned developments."
+                 if after_ab956 else "")
         if hoa:
             hoa_name = hoa if isinstance(hoa, str) else "The HOA"
             add(ResolvedRule(
                 key="hoa_review", layer="hoa", authority=hoa_name, status="settled",
                 statement=("Can review an ADU's design alongside the permit, but can't ban it or impose unreasonable "
-                           "restrictions."),
-                **_src("civ4751"),
+                           "restrictions." + reach),
+                **_src(hoa_src),
             ))
+            if _upcoming(as_of, AB956_EFFECTIVE):
+                add(ResolvedRule(
+                    key="hoa_planned_dev", layer="hoa", authority=hoa_name, status="upcoming",
+                    statement=("Starting Jan 1, 2027, the state's limits on HOA rules about ADUs apply on any lot zoned to "
+                               "allow a single-family home, including planned developments."),
+                    effective_from=AB956_EFFECTIVE.isoformat(), **_src("civ4751_ab956"),
+                ))
         elif hoa is None:
             add(ResolvedRule(
                 key="hoa_review", layer="hoa", authority="HOA", status="not_checked",
                 statement=("We haven't confirmed whether an HOA covers this lot. If one does, it can review an ADU's design "
-                           "but can't ban it."),
-                **_src("civ4751"),
+                           "but can't ban it." + reach),
+                **_src(hoa_src),
             ))
 
     authorities = ["State law", local_name]

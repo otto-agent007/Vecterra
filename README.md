@@ -106,9 +106,19 @@ curl -X POST localhost:8000/pipeline/run -H 'content-type: application/json' -d 
 | Node | Type | What it does |
 |---|---|---|
 | `VisionScorerNode` | LLM (vision) | Scores roof / paint / structure 0–100 from signed photo URLs. System prompt forbids describing people or occupant signals. Model set by `VECTERRA_VISION_MODEL`. |
-| `ZoningAnalyzerNode` | deterministic | State ADU floor (4 ft side/rear setbacks, 800 sq ft by-right) + county/city tables → feasibility score and caveats. Every number carries a `verify` note. |
+| `ZoningAnalyzerNode` | deterministic | Layered rules (`agents/rule_layers.py`) → feasibility score, caveats and a "who sets the rules" list. See below. |
 | `DraftDossierNode` | template | Jinja2 Markdown from structured state only — no free-form prose. This is the canonical, screened text. |
 | `ComplianceFirewallNode` | deterministic | Regex rule set for FHA + CA FEHA protected classes, steering phrases, distress targeting, occupant inference. Text is NFKC-normalized and stripped of invisible characters and HTML first. Blocks are redacted (overlapping spans merged), warnings route the dossier to `compliance_hold`, Equal Housing + estimate disclaimers appended. Lead rationale keys are whitelisted to property factors. Vision observations are screened by the same rules *before they enter state*, so no unscreened model text reaches the DB, API, or report. `tests/test_firewall_corpus.py` is the must-block / must-pass corpus — add a case whenever the field finds a miss. |
+
+### Layered zoning rules
+
+`agents/rule_layers.py` resolves every ADU rule for a parcel by layer, in order of precedence:
+
+1. **State law**: floors local rules can't go below (an 800 sq ft ADU, 16 ft height), ceilings they can't exceed (4 ft side and rear setbacks), and restrictions it voids (sprinkler mandates, HOA bans). It wins any conflict.
+2. **One local land-use authority**: the County of San Diego for unincorporated parcels *or* the City of Escondido, never both. It applies where state law leaves room.
+3. **Overlays that stack**: the fire authority, County Environmental Health (septic) and any HOA. All apply together, except where state law voids a requirement.
+
+Each rule records its source, effective date and status: `settled`, `verify`, `unsettled` (the agencies disagree, or the rule was withdrawn, so Vecterra says so instead of picking a side), `upcoming`, or `not_checked` (a parcel fact not loaded yet). Results depend on `as_of`, so AB 956's two detached ADUs switch on automatically on Jan 1, 2027, and an unupdated local ordinance is recorded as a resolved conflict. Overlay facts (`fire_hazard_zone`, `fire_responsibility`, `fire_agency`, `sewer_service`, `hoa`) are optional parcel fields that ingestion will fill. This is a working model of the law, not legal advice; `verify` items say who to confirm with.
 
 ### The dossier report
 

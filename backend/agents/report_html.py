@@ -34,6 +34,7 @@ from jinja2 import Environment, StrictUndefined, select_autoescape
 from markupsafe import Markup
 
 from .compliance import EQUAL_HOUSING_STATEMENT, ESTIMATE_DISCLAIMER, FIREWALL_VERSION
+from .rule_layers import homeowner_groups
 
 REPORT_TEMPLATE_VERSION = "dossier-html-v1"
 
@@ -485,6 +486,14 @@ _TEMPLATE = r"""<!doctype html>
   ul.plain { margin: 0; padding-left: 18px; max-width: 62ch; }
   ul.plain li { margin: 4px 0; }
 
+  /* Who sets the rules: one group per layer, in precedence order */
+  .rules { max-width: 62ch; margin: 2px 0 6px; }
+  .rule-group + .rule-group { margin-top: 12px; }
+  .rg-title { margin: 0 0 2px; font-size: 14px; font-weight: 620; font-stretch: 108%; }
+  .rg-lead { font-weight: 560; }
+  .tag { display: inline-block; margin-left: 2px; padding: 0 7px; border-radius: 9px; font-size: 12px; line-height: 1.6;
+         color: var(--ink-2); background: #EEF0FA; white-space: nowrap; }
+
   /* Value picture: one bar, two shades of one hue, 2px surface gap */
   .split { display: flex; gap: 2px; height: 18px; max-width: 560px; margin: 10px 0 10px; }
   .split > span { display: block; height: 100%; }
@@ -527,7 +536,8 @@ _TEMPLATE = r"""<!doctype html>
     .row { grid-template-columns: 150px minmax(0, 1fr); gap: 22px; padding: 16px 24px; }
     .fine { padding: 14px 24px 16px; }
     /* Keep small units whole; let sections flow across pages instead of leaving gaps */
-    .meter-row, .feas, .split, .legend, table.facts tr, dl.factors dt, dl.factors dd, ul.plain li, .fine p, .empty { break-inside: avoid; }
+    .meter-row, .feas, .split, .legend, table.facts tr, dl.factors dt, dl.factors dd, ul.plain li, .fine p, .empty, .rg-title { break-inside: avoid; }
+    .rg-title { break-after: avoid; }
     .row h2, .row .lede { break-after: avoid; }
     .bignum { font-size: 26px; }
     .meter > span, .split > span, .legend i, .hero { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -597,7 +607,20 @@ _TEMPLATE = r"""<!doctype html>
       <tr><th scope="row">Estimated house footprint</th><td>{{ footprint }}</td></tr>
       <tr><th scope="row">Room left after setbacks</th><td>{{ buildable }}</td></tr>
     </table>
+    {% if rule_groups %}
+    <h3>Who sets the rules</h3>
+    <p class="small muted">State law overrides {{ land_use_authority }} rules where they conflict. Fire, septic and HOA requirements apply on top.</p>
+    <div class="rules">
+    {% for g in rule_groups %}
+      <div class="rule-group">
+        <p class="rg-title">{{ g.title }}</p>
+        <ul class="plain">{% for r in g["items"] %}<li>{% if r.lead %}<span class="rg-lead">{{ r.lead }}:</span> {% endif %}{{ r.statement }}{% if r.status == "verify" %} <span class="tag">To confirm{% if r.confirm_with %} with {{ r.confirm_with }}{% endif %}</span>{% endif %}</li>{% endfor %}</ul>
+      </div>
+    {% endfor %}
+    </div>
+    {% else %}
     <p>California law requires that an ADU of at least {{ adu.by_right_min_sqft }} sq ft be allowed on residential lots, with side and rear setbacks of no more than {{ adu.side_rear_setback_ft }} ft. The local cap for a detached ADU here is about {{ "{:,}".format(adu.max_detached_sqft) }} sq ft, and a junior ADU inside the house can be up to {{ adu.jadu_max_sqft }} sq ft.</p>
+    {% endif %}
     {% if caveats %}
     <h3>Worth checking</h3>
     <ul class="plain">{% for c in caveats %}<li>{{ c }}</li>{% endfor %}</ul>
@@ -723,6 +746,8 @@ def render_report_html(
         adu={"by_right_min_sqft": adu.get("by_right_min_sqft", 800), "side_rear_setback_ft": adu.get("side_rear_setback_ft", 4),
              "max_detached_sqft": adu.get("max_detached_sqft", 1200), "jadu_max_sqft": adu.get("jadu_max_sqft", 500)},
         caveats=list(zoning.get("caveats") or []),
+        rule_groups=homeowner_groups((zoning.get("rule_layers") or {}).get("rules") or []),
+        land_use_authority=(zoning.get("rule_layers") or {}).get("land_use_authority") or "local",
         value=_value_picture(parcel),
         assessed=_money(parcel.get("assessed_total_value")),
         tax_year=parcel.get("tax_year"),

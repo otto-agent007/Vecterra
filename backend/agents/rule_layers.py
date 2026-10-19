@@ -80,6 +80,10 @@ SRC = {
     "deh_septic": ("County DEH ADU / second dwelling FAQ",
                    "https://www.sandiegocounty.gov/content/dam/sdc/deh/lwqd/ADU%20Second%20Dwellings%20FAQ%20Revised%20020121.pdf"),
     "county_adu": ("County of San Diego PDS ADU page", "https://www.sandiegocounty.gov/content/sdc/pds/bldg/adu.html"),
+    "county_pds611": ("County of San Diego ADU handout PDS-611 (Rev. 3/11/2022) and PDS ADU page",
+                      "https://sandiegocounty.gov/content/dam/sdc/pds/zoning/PDS-PLN-611.pdf"),
+    "esc_33_1474": ("Escondido Zoning Code § 33-1474, Table 33-1474 (Ord. 2023-15)",
+                    "https://gocodebook.com/library/us/ca/escondido-zoning/division-9-zoning-administrator/article-70-accessory-dwelling-units-and-junior-accessory-dwelling-units/33-1474.-development-standards"),
     "county_sb9": ("County of San Diego SB 9 page", "https://www.sandiegocounty.gov/content/sdc/pds/zoninghome/sb9home.html"),
     "hcd_burbank": ("HCD technical assistance letter to Burbank (Sep 2025)",
                     "https://www.hcd.ca.gov/sites/default/files/docs/planning-and-community/HAU/burbank-hau-1904-ta-091525.pdf"),
@@ -95,9 +99,11 @@ LOCAL_AUTHORITIES: Dict[str, Dict[str, Any]] = {
     "san_diego_county": {
         "name": "County of San Diego",
         "detached_cap_sqft": 1200,
-        "detached_cap_status": "verify",
+        "detached_cap_status": "settled",
         "detached_cap_note": None,
-        "detached_cap_source": "county_adu",
+        "detached_cap_source": "county_pds611",
+        "detached_height_ft": 24,
+        "small_lot_cap": None,
         "ab956_ordinance_updated": False,   # County page doesn't reflect AB 956 yet (Oct 2026)
         "states_state_law_prevails": True,  # County ADU page: state law controls where they conflict
         "preapproved_plans": None,
@@ -108,9 +114,12 @@ LOCAL_AUTHORITIES: Dict[str, Dict[str, Any]] = {
     "city_of_escondido": {
         "name": "City of Escondido",
         "detached_cap_sqft": 1000,
-        "detached_cap_status": "verify",
-        "detached_cap_note": "City materials say 1,000 sq ft; some builders cite 1,200",
-        "detached_cap_source": "esc_paadu",
+        "detached_cap_status": "settled",
+        "detached_cap_note": None,
+        "detached_cap_source": "esc_33_1474",
+        "detached_height_ft": None,  # zone limit applies; state law guarantees 16 ft
+        # Table 33-1474: lots under 20,000 sq ft cap a 0-1 bedroom ADU at 850 sq ft.
+        "small_lot_cap": {"lot_under_sqft": 20000, "one_bedroom_cap_sqft": 850},
         "ab956_ordinance_updated": False,
         "states_state_law_prevails": False,
         "preapproved_plans": (484, 644, 851, 1000),
@@ -316,7 +325,14 @@ def resolve_rules(
                        "so only state law is applied."),
         ))
     elif residential is not False:
-        cap_statement = f"Caps a detached ADU at {numbers['detached_cap_sqft']:,} sq ft."
+        cap_statement = f"Caps a detached ADU at {numbers['detached_cap_sqft']:,} sq ft"
+        small = local.get("small_lot_cap")
+        if small and lot_area_sqft and lot_area_sqft < small["lot_under_sqft"]:
+            cap_statement += (f" ({small['one_bedroom_cap_sqft']:,} sq ft for one bedroom or less, because this lot is under "
+                              f"{small['lot_under_sqft']:,} sq ft)")
+        if local.get("detached_height_ft"):
+            cap_statement += f" and allows it up to {local['detached_height_ft']} ft tall"
+        cap_statement += "."
         if local.get("detached_cap_note"):
             cap_statement += f" ({local['detached_cap_note']}.)"
         add(ResolvedRule(

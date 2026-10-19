@@ -72,12 +72,24 @@ def test_state_floor_supersedes_a_local_cap_that_is_too_low():
     assert conflicts[0].status == "resolved" and "State minimum applies" in conflicts[0].resolution
 
 
-def test_local_cap_within_state_bounds_is_kept_and_disagreeing_sources_are_flagged():
-    z = evaluate_zoning(CITY, as_of=BEFORE)
-    assert z["adu"]["max_detached_sqft"] == 1000
-    conflicts = {c["key"]: c for c in z["rule_layers"]["conflicts"]}
-    assert conflicts["detached_cap_sources"]["status"] == "sources_disagree"
-    assert _rules(z)["detached_cap"]["status"] == "verify"
+def test_disagreeing_sources_are_flagged_until_confirmed():
+    unsure = {**LOCAL_AUTHORITIES["city_of_escondido"], "detached_cap_status": "verify",
+              "detached_cap_note": "City says 1,000 sq ft; a builder says 1,200"}
+    numbers, conflicts = resolve_numbers(unsure, BEFORE)
+    assert numbers["detached_cap_sqft"] == 1000 and numbers["detached_cap_status"] == "verify"
+    assert conflicts[0].key == "detached_cap_sources" and conflicts[0].status == "sources_disagree"
+
+
+def test_verified_local_caps_come_from_the_published_codes():
+    city = _rules(evaluate_zoning(CITY, as_of=BEFORE))["detached_cap"]  # 22,000 sq ft lot
+    assert city["status"] == "settled" and "§ 33-1474" in city["source"]
+    assert city["statement"] == "Caps a detached ADU at 1,000 sq ft."
+    small = _rules(evaluate_zoning({**CITY, "lot_area_sqft": 7500}, as_of=BEFORE))["detached_cap"]
+    assert "850 sq ft for one bedroom or less" in small["statement"]
+    county = _rules(evaluate_zoning(COUNTY, as_of=BEFORE))["detached_cap"]
+    assert county["status"] == "settled" and "PDS-611" in county["source"]
+    assert county["statement"] == "Caps a detached ADU at 1,200 sq ft and allows it up to 24 ft tall."
+    assert not evaluate_zoning(CITY, as_of=BEFORE)["rule_layers"]["conflicts"]
 
 
 def test_overlays_stack_and_state_voids_hoa_bans():

@@ -15,25 +15,29 @@ state ADU handbook before any figure reaches a homeowner.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Dict, Optional
 
-RULES_VERSION = "zoning-rules-v0.1"
+from .rule_layers import STATE_FLOOR, resolve_rules
+
+RULES_VERSION = "zoning-rules-v0.2"
 
 # State-law floor that applies regardless of jurisdiction (Gov. Code ADU
 # statutes, formerly § 65852.2; recodified as §§ 66310 et seq.).
 STATE_ADU_BASELINE: Dict[str, Any] = {
     "source": "California Government Code ADU statutes (formerly § 65852.2; now §§ 66310–66342)",
     "verify": "Confirm current text at leginfo.legislature.ca.gov and the HCD ADU Handbook.",
-    "min_side_rear_setback_ft": 4,            # local agencies may not require more than 4 ft side/rear
-    "by_right_min_sqft_cannot_be_denied": 800,  # an 800 sq ft ADU must be allowed on any residential lot
-    "typical_local_max_detached_sqft": 1200,  # common local cap for detached ADUs
-    "max_height_ft_minimum_allowed": 16,      # locals must allow at least 16 ft (18 ft near transit / multistory)
-    "min_lot_size_requirement_allowed": False,  # locals may not impose minimum lot size for ADUs
-    "jadu_max_sqft": 500,
-    "max_units_sfr_lot": {"adu": 1, "jadu": 1},
-    "owner_occupancy_required_for_adu": False,  # suspended for ADUs; JADUs generally still require it
+    "min_side_rear_setback_ft": STATE_FLOOR["max_side_rear_setback_ft"],  # locals may not require more
+    "by_right_min_sqft_cannot_be_denied": STATE_FLOOR["guaranteed_adu_sqft"],
+    "typical_local_max_detached_sqft": STATE_FLOOR["default_detached_cap_sqft"],
+    "max_height_ft_minimum_allowed": STATE_FLOOR["guaranteed_height_ft"],
+    "min_lot_size_requirement_allowed": False,
+    "jadu_max_sqft": STATE_FLOOR["jadu_max_sqft"],
+    "owner_occupancy_required_for_adu": False,
     "parking_replacement_required_when_garage_converted": False,
 }
+# Unit counts, dated rules (AB 956 from 2027), local caps and overlays live in
+# rule_layers.py, which also records who sets each rule and how conflicts resolve.
 
 JURISDICTION_RULES: Dict[str, Dict[str, Any]] = {
     "san_diego_county": {
@@ -41,7 +45,6 @@ JURISDICTION_RULES: Dict[str, Dict[str, Any]] = {
         "ordinance": "San Diego County Zoning Ordinance § 6156 (Accessory Dwelling Units)",
         "verify": "Confirm with County Planning & Development Services; Harmony Grove Village has a Specific Plan overlay.",
         "residential_zone_prefixes": ("RR", "RS", "RM", "RV", "A70", "A72", "S88", "S92"),
-        "adu_max_detached_sqft": 1200,
         "adu_max_attached_pct_of_primary": 50,
         "front_setback_ft_typical": 20,
         "notes": [
@@ -55,7 +58,6 @@ JURISDICTION_RULES: Dict[str, Dict[str, Any]] = {
         "ordinance": "Escondido Zoning Code Article 44 (Accessory Dwelling Units)",
         "verify": "Confirm with City of Escondido Planning Division.",
         "residential_zone_prefixes": ("R-1", "RE", "R-2", "R-3", "R-4", "R-5"),
-        "adu_max_detached_sqft": 1200,
         "adu_max_attached_pct_of_primary": 50,
         "front_setback_ft_typical": 20,
         "notes": [
@@ -67,7 +69,6 @@ JURISDICTION_RULES: Dict[str, Dict[str, Any]] = {
         "ordinance": None,
         "verify": "Resolve jurisdiction via spatial join with the city boundary layer before issuing guidance.",
         "residential_zone_prefixes": (),
-        "adu_max_detached_sqft": STATE_ADU_BASELINE["by_right_min_sqft_cannot_be_denied"],
         "adu_max_attached_pct_of_primary": 50,
         "front_setback_ft_typical": 20,
         "notes": ["Only the state-law floor is applied until jurisdiction is confirmed."],
@@ -92,10 +93,17 @@ def estimate_primary_footprint(living_area_sqft: Optional[float], year_built: Op
     return living_area_sqft / stories * 1.15  # garage/porch allowance
 
 
-def evaluate_zoning(parcel: Dict[str, Any]) -> Dict[str, Any]:
-    """Return an ADU-feasibility snapshot for a parcel row."""
+def evaluate_zoning(parcel: Dict[str, Any], *, as_of: Optional[date] = None) -> Dict[str, Any]:
+    """Return an ADU-feasibility snapshot for a parcel row, with every rule's layer and source.
+
+    ``as_of`` decides which dated rules are in force (e.g. AB 956 from 2027-01-01);
+    it defaults to today.
+    """
+    as_of = as_of or date.today()
     jurisdiction = parcel.get("jurisdiction") or "unknown"
-    rules = JURISDICTION_RULES.get(jurisdiction, JURISDICTION_RULES["unknown"])
+    if jurisdiction not in JURISDICTION_RULES:
+        jurisdiction = "unknown"
+    rules = JURISDICTION_RULES[jurisdiction]
     zoning_code = parcel.get("zoning_code")
     lot = float(parcel.get("lot_area_sqft") or 0)
     living = parcel.get("living_area_sqft")
@@ -112,8 +120,13 @@ def evaluate_zoning(parcel: Dict[str, Any]) -> Dict[str, Any]:
     usable = max(0.0, usable_side * max(0.0, side - setback - front)) if lot else 0.0
     remaining = max(0.0, usable - footprint - 400)  # 400 sq ft driveway/paths allowance
 
-    max_detached = rules["adu_max_detached_sqft"]
-    by_right = STATE_ADU_BASELINE["by_right_min_sqft_cannot_be_denied"]
+    layered = resolve_rules(
+        parcel, jurisdiction=jurisdiction, residential=residential,
+        lot_area_sqft=lot, remaining_sqft=remaining, as_of=as_of,
+    )
+    numbers = layered.numbers
+    max_detached = numbers["detached_cap_sqft"]
+    by_right = numbers["guaranteed_adu_sqft"]
 
     if residential is False:
         feasibility, score = "unlikely", 10
@@ -134,8 +147,11 @@ def evaluate_zoning(parcel: Dict[str, Any]) -> Dict[str, Any]:
         caveats.insert(0, "Jurisdiction unresolved — only the state-law floor applied.")
     if residential is None:
         caveats.append("Zoning code missing; residential status unverified.")
-    if lot and lot > 43560 * 0.9:
-        caveats.append("Lot likely on septic — ADU bedroom count may be capped by septic capacity.")
+    two_fit = bool(residential is not False and remaining >= 2 * by_right)
+    if two_fit and numbers["max_detached_units"] == 2:
+        caveats.append(f"There's room on paper for two detached ADUs of {by_right:,} sq ft each.")
+    elif two_fit:
+        caveats.append(f"From Jan 1, 2027 there may be room for two detached ADUs of {by_right:,} sq ft each.")
 
     return {
         "rules_version": RULES_VERSION,
@@ -151,14 +167,17 @@ def evaluate_zoning(parcel: Dict[str, Any]) -> Dict[str, Any]:
             "allowed_by_state_floor": residential is not False,
             "by_right_min_sqft": by_right,
             "max_detached_sqft": max_detached,
+            "max_detached_units": numbers["max_detached_units"],
+            "two_detached_fit": two_fit,
             "max_attached_pct_of_primary": rules["adu_max_attached_pct_of_primary"],
             "side_rear_setback_ft": setback,
             "front_setback_ft_typical": front,
-            "jadu_max_sqft": STATE_ADU_BASELINE["jadu_max_sqft"],
+            "jadu_max_sqft": numbers["jadu_max_sqft"],
             "min_lot_size_required": STATE_ADU_BASELINE["min_lot_size_requirement_allowed"],
         },
         "feasibility": feasibility,
         "feasibility_score": score,
         "caveats": caveats,
         "verify": [STATE_ADU_BASELINE["verify"], rules["verify"]],
+        "rule_layers": layered.as_dict(),
     }

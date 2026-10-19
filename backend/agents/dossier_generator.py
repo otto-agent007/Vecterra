@@ -16,6 +16,7 @@ from jinja2 import Environment, StrictUndefined
 from markupsafe import escape
 
 from .compliance import ALLOWED_RATIONALE_KEYS
+from .rule_layers import homeowner_groups
 
 GENERATOR_VERSION = "dossier-template-v0.1"
 
@@ -60,6 +61,18 @@ _No exterior photographs were available for this parcel; condition scores are pl
 
 {% for c in zoning.caveats %}
 - {{ c }}
+{% endfor %}
+{% endif %}
+{% if rule_groups %}
+
+**Who sets the rules** (state law overrides {{ land_use_authority }} rules where they conflict; fire, septic and HOA requirements apply on top)
+
+{% for g in rule_groups %}
+- {{ g.title }}
+{% for r in g["items"] %}
+    - {% if r.lead %}{{ r.lead }}: {% endif %}{{ r.statement }}{% if r.status == "verify" %} _(to confirm{% if r.confirm_with %} with {{ r.confirm_with }}{% endif %})_{% endif %}
+
+{% endfor %}
 {% endfor %}
 {% endif %}
 
@@ -192,7 +205,21 @@ def render_markdown(parcel: Dict[str, Any], scores: Dict[str, Any], zoning: Dict
         zoning=zoning,
         rationale=rationale,
         money=_money,
+        rule_groups=_md_rule_groups(zoning),
+        land_use_authority=_md_safe((zoning.get("rule_layers") or {}).get("land_use_authority")) or "local",
     )
+
+
+def _md_rule_groups(zoning: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Rule groups for the Markdown dossier, with data-derived names (HOA, fire agency) neutralized."""
+    groups = homeowner_groups((zoning.get("rule_layers") or {}).get("rules") or [])
+    for g in groups:
+        g["title"] = _md_safe(g["title"])
+        for r in g["items"]:
+            for k in ("lead", "statement", "confirm_with"):
+                if r.get(k):
+                    r[k] = _md_safe(r[k])
+    return groups
 
 
 # Allow-list for the rendered report body. Everything the Markdown template emits

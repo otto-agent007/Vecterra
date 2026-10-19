@@ -322,6 +322,12 @@ DEMO_PARCEL: Dict[str, Any] = {
     "estimated_market_value": 1375000,
     "estimated_equity": 1130000,
     "equity_confidence": 0.55,
+    # Overlay facts that ingestion will join per parcel (synthetic values for the demo)
+    "fire_hazard_zone": "Very High",
+    "fire_responsibility": "SRA",
+    "fire_agency": "Rancho Santa Fe Fire Protection District",
+    "sewer_service": "septic",
+    "hoa": False,
 }
 
 

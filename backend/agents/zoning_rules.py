@@ -57,7 +57,7 @@ JURISDICTION_RULES: Dict[str, Dict[str, Any]] = {
         "name": "City of Escondido",
         "ordinance": "Escondido Zoning Code Article 44 (Accessory Dwelling Units)",
         "verify": "Confirm with City of Escondido Planning Division.",
-        "residential_zone_prefixes": ("R-1", "RE", "R-2", "R-3", "R-4", "R-5"),
+        "residential_zone_prefixes": ("R-1", "RE", "R-E", "RA", "R-A", "R-2", "R-3", "R-4", "R-5", "PD-R"),
         "adu_max_attached_pct_of_primary": 50,
         "front_setback_ft_typical": 20,
         "notes": [

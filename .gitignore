@@ -29,3 +29,6 @@ backend/data/
 
 # OS
 .DS_Store
+
+# raw layer downloads from ingestion/load_study_area.py --cache-dir
+.cache/

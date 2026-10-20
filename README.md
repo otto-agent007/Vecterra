@@ -21,7 +21,10 @@ Vecterra/
 ├── backend/
 │   ├── ingestion/
 │   │   ├── schema.sql             # PostGIS tables, RPC, RLS, storage bucket
-│   │   ├── load_parcels.py        # GeoPandas → Supabase bulk upsert
+│   │   ├── load_parcels.py        # GeoPandas → Supabase bulk upsert (any parcel file)
+│   │   ├── study_area.py          # public ArcGIS layers → parcels with overlay facts joined
+│   │   ├── load_study_area.py     # CLI: fetch + join + upsert the real study area
+│   │   ├── migrations/            # incremental SQL for existing databases
 │   │   └── sample_parcels.geojson # synthetic fixture (not real parcels)
 │   ├── agents/
 │   │   ├── state.py               # LangGraph state TypedDicts
@@ -79,7 +82,26 @@ pip install -r requirements.txt
 cp .env.example .env   # fill SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY
 ```
 
-**Ingest parcels** (SanGIS `PARCELS` layer or any GeoJSON/shapefile):
+**Load the real study area** (7,121 parcels in the Harmony Grove bbox, overlays joined):
+```bash
+psql "$DATABASE_URL" -f ingestion/migrations/20261020_parcel_overlays.sql   # once, on databases created before Oct 20, 2026
+python -m ingestion.load_study_area --dry-run                                # fetch + join + print counts
+python -m ingestion.load_study_area --cache-dir .cache/study                 # upsert on APN; keeps raw layers for re-runs
+```
+Or run the **Load study area** workflow from the Actions tab (needs `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` repository secrets; dry run by default). `ingestion/study_area.py` fetches each layer from its public ArcGIS service and joins it:
+
+| Column | Source | Join |
+|---|---|---|
+| `jurisdiction` | SANDAG municipal boundaries (parcel's own `situs_juris` as fallback) | representative point |
+| `zoning_code` / `zoning_desc` | Escondido zoning (by APN); County zoning (unincorporated) | APN / representative point |
+| `fire_hazard_zone`, `fire_responsibility` | CAL FIRE FHSZ: SRA map (eff. 2024-04-01) + LRA map (2025-03-24) | class covering the largest share of the lot |
+| `fire_agency` | SANDAG fire agencies | representative point |
+| `sewer_service`, `sewer_basis` | County DEH septic/sewer designation; County wastewater districts; Escondido sewer mains | APN / representative point / nearest main |
+| `hoa`, `hoa_basis` | the lot's recorded subdivision contains a $0 common-area lot | subdivision |
+
+`overlay_facts` keeps what each join measured: per-class fire shares and the highest class touching ≥5% of the lot, the raw DEH designation and confidence, both jurisdiction readings, and source dates. Sewer or septic is decided in order of evidence: DEH "Known" and "Likely" calls first, then a County wastewater district covering the lot, then DEH "Assumed Sewer", then a public sewer main within 50 ft (reported as `verify`). DEH's weakest call, "Assumed Septic", counts only when no main is mapped within 200 ft (also `verify`); otherwise the lot stays unresolved. `sewer_basis` records which of these decided it, and `overlay_facts` keeps the district name and distance to the nearest main. One more cautious choice: `hoa` is `true` or `null`, never `false`, because no public record proves a lot has no HOA. The source layer has no owner names; a last-document date is kept as `last_sale_date` only when the document is a grant deed, and document-type codes are never stored. Parcel and boundary data: *GIS data derived from SanGIS*.
+
+**Ingest any other parcel file** (SanGIS `PARCELS` shapefile or any GeoJSON):
 ```bash
 python ingestion/load_parcels.py --input ingestion/sample_parcels.geojson --zip 92029 --dry-run
 python ingestion/load_parcels.py --input data/PARCELS.shp --zip 92029
@@ -118,7 +140,7 @@ curl -X POST localhost:8000/pipeline/run -H 'content-type: application/json' -d 
 2. **One local land-use authority**: the County of San Diego for unincorporated parcels *or* the City of Escondido, never both. It applies where state law leaves room.
 3. **Overlays that stack**: the fire authority, County Environmental Health (septic) and any HOA. All apply together, except where state law voids a requirement.
 
-Each rule records its source, effective date and status: `settled`, `verify`, `unsettled` (the agencies disagree, or the rule was withdrawn, so Vecterra says so instead of picking a side), `upcoming`, or `not_checked` (a parcel fact not loaded yet). Results depend on `as_of`, so AB 956's two detached ADUs switch on automatically on Jan 1, 2027, and an unupdated local ordinance is recorded as a resolved conflict. From that date, a lot that builds two detached ADUs need not also get a junior ADU, and the HOA limits in Civil Code § 4751 reach any lot zoned to allow a single-family home, including planned developments (AB 956, Ch. 791). Every residential parcel also gets an AB 2533 note (Gov. Code § 66332): a unit built before 2020 without permits can be permitted, and since neither state law nor the County or Escondido defines proof of the build date, the note lists the types other agencies publish. Local caps come from the published codes: the County's 1,200 sq ft and 24 ft (PDS-611), and Escondido's 1,000 sq ft (850 sq ft for one bedroom on lots under 20,000 sq ft), zone height (35 ft in R-1, R-E and R-A) and 4 ft side and rear setbacks (§§ 33-1474, 33-107). Overlay facts (`fire_hazard_zone`, `fire_responsibility`, `fire_agency`, `sewer_service`, `hoa`) are optional parcel fields that ingestion will fill. This is a working model of the law, not legal advice; `verify` items say who to confirm with.
+Each rule records its source, effective date and status: `settled`, `verify`, `unsettled` (the agencies disagree, or the rule was withdrawn, so Vecterra says so instead of picking a side), `upcoming`, or `not_checked` (a parcel fact not loaded yet). Results depend on `as_of`, so AB 956's two detached ADUs switch on automatically on Jan 1, 2027, and an unupdated local ordinance is recorded as a resolved conflict. From that date, a lot that builds two detached ADUs need not also get a junior ADU, and the HOA limits in Civil Code § 4751 reach any lot zoned to allow a single-family home, including planned developments (AB 956, Ch. 791). Every residential parcel also gets an AB 2533 note (Gov. Code § 66332): a unit built before 2020 without permits can be permitted, and since neither state law nor the County or Escondido defines proof of the build date, the note lists the types other agencies publish. Local caps come from the published codes: the County's 1,200 sq ft and 24 ft (PDS-611), and Escondido's 1,000 sq ft (850 sq ft for one bedroom on lots under 20,000 sq ft), zone height (35 ft in R-1, R-E and R-A) and 4 ft side and rear setbacks (§§ 33-1474, 33-107). Overlay facts (`fire_hazard_zone`, `fire_responsibility`, `fire_agency`, `sewer_service`, `sewer_basis`, `hoa`, `hoa_basis`) come from `ingestion/load_study_area.py`; an HOA inferred from records, septic inferred from DEH's "Likely" or "Assumed" calls, and sewer inferred from a nearby main are reported as `verify`, not `settled`. Parcels in the City of San Marcos or City of San Diego are named as such, with only state law applied until their ordinances are modeled. This is a working model of the law, not legal advice; `verify` items say who to confirm with.
 
 ### The dossier report
 
@@ -157,7 +179,8 @@ Everything except LiDAR runs in **Expo Go** (map, camera, location, offline queu
 
 ## 5. Roadmap after scaffold
 
-- [ ] Spatial join against city-boundary layer to resolve `jurisdiction` instead of zoning-code heuristics
+- [x] Spatial join against city-boundary layer to resolve `jurisdiction` instead of zoning-code heuristics (`ingestion/load_study_area.py`)
+- [ ] Real lot geometry for ADU room (building footprints, setbacks, slope) instead of the square-lot approximation in `zoning_rules.py`
 - [ ] Marker clustering above the zoom gate (currently a "zoom in" banner)
 - [ ] On-device CV (blur/exposure gate) populating `edge_cv_metadata` before upload
 - [ ] Supabase Database Webhook → `/webhooks/supabase/scan-uploaded`

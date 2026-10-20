@@ -1,0 +1,53 @@
+name: Load study area
+
+# Manually run from the Actions tab (works from the GitHub mobile app).
+# Fetches SanGIS parcels + overlay layers from their public ArcGIS services,
+# joins them, and upserts into Supabase on APN. Leave "dry_run" checked to
+# only print the counts.
+#
+# Needs repository secrets SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY, and the
+# migration backend/ingestion/migrations/20261020_parcel_overlays.sql applied.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (fetch, join and count; write nothing)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: load-study-area
+  cancel-in-progress: false
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Fetch, join and load
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args="--summary-json summary.json"
+          if [ "$DRY_RUN" = "true" ]; then args="$args --dry-run"; fi
+          python -m ingestion.load_study_area $args
+      - name: Counts
+        if: always()
+        run: |
+          if [ -f summary.json ]; then
+            { echo '### Study-area counts'; echo '```json'; cat summary.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi

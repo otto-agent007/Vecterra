@@ -22,6 +22,10 @@ set search_path = public, extensions;
 do $$ begin
   create type zoning_jurisdiction as enum ('san_diego_county', 'city_of_escondido', 'unknown');
 exception when duplicate_object then null; end $$;
+-- The study-area bbox also clips 52 San Marcos parcels and a few in the City of
+-- San Diego. Vecterra doesn't model their ADU ordinances yet but names them.
+alter type zoning_jurisdiction add value if not exists 'city_of_san_marcos';
+alter type zoning_jurisdiction add value if not exists 'city_of_san_diego';
 
 do $$ begin
   create type scan_status as enum ('queued', 'uploaded', 'processing', 'scored', 'failed');
@@ -102,6 +106,32 @@ create index if not exists parcels_equity_idx    on parcels (estimated_equity de
 drop trigger if exists parcels_set_updated_at on parcels;
 create trigger parcels_set_updated_at before update on parcels
   for each row execute function set_updated_at();
+
+-- -----------------------------------------------------------------------------
+-- Overlay facts (added 2026-10-20; migrations/20261020_parcel_overlays.sql).
+-- Written as ALTERs so this file also upgrades databases created before them.
+-- Filled by `python -m ingestion.load_study_area`; read by agents/rule_layers.py.
+-- -----------------------------------------------------------------------------
+alter table parcels
+  -- CAL FIRE zone covering the largest share of the lot; per-class shares in overlay_facts
+  add column if not exists fire_hazard_zone    text check (fire_hazard_zone in ('Very High', 'High', 'Moderate', 'None')),
+  add column if not exists fire_responsibility text check (fire_responsibility in ('SRA', 'LRA')),
+  add column if not exists fire_agency         text,
+  -- from County DEH records, wastewater districts and public sewer mains; null when unresolved
+  add column if not exists sewer_service       text check (sewer_service in ('sewer', 'septic')),
+  -- how sewer_service was decided: deh_known_septic, deh_known_sewer, sewer_district, deh_assumed_sewer,
+  -- deh_likely_septic, sewer_main_nearby, deh_assumed_septic_no_main (see ingestion/study_area.py)
+  add column if not exists sewer_basis         text,
+  -- true = likely in a common-interest development; null = no evidence either way (never "no HOA")
+  add column if not exists hoa                 boolean,
+  add column if not exists hoa_name            text,
+  add column if not exists hoa_basis           text,
+  add column if not exists overlay_facts       jsonb not null default '{}'::jsonb,
+  add column if not exists overlays_as_of      date;
+
+create index if not exists parcels_fire_zone_idx    on parcels (fire_hazard_zone);
+create index if not exists parcels_sewer_idx        on parcels (sewer_service);
+create index if not exists parcels_jurisdiction_idx on parcels (jurisdiction);
 
 -- =============================================================================
 -- property_scans — one row per field capture session (photos + optional LiDAR)
@@ -300,7 +330,10 @@ grant select (
   assessed_land_value, assessed_improvement_value, assessed_total_value, tax_year,
   last_sale_date, last_sale_price, estimated_market_value, estimated_equity,
   equity_confidence, equity_model_version, centroid, source, source_ingested_at,
-  created_at, updated_at
+  created_at, updated_at,
+  -- overlay facts are property facts, not owner data
+  fire_hazard_zone, fire_responsibility, fire_agency, sewer_service, sewer_basis,
+  hoa, hoa_name, hoa_basis, overlay_facts, overlays_as_of
 ) on parcels to authenticated;
 
 grant select, insert, update on property_scans to authenticated;

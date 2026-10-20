@@ -2,7 +2,12 @@
 // Regenerate strict DB types later with: supabase gen types typescript --project-id <id>
 
 export type ScanStatus = 'queued' | 'uploaded' | 'processing' | 'scored' | 'failed';
-export type Jurisdiction = 'san_diego_county' | 'city_of_escondido' | 'unknown';
+export type Jurisdiction =
+  | 'san_diego_county'
+  | 'city_of_escondido'
+  | 'city_of_san_marcos'
+  | 'city_of_san_diego'
+  | 'unknown';
 
 /** Lightweight row returned by the `parcels_in_bbox` RPC for map markers. */
 export interface ParcelSummary {

@@ -117,8 +117,11 @@ alter table parcels
   add column if not exists fire_hazard_zone    text check (fire_hazard_zone in ('Very High', 'High', 'Moderate', 'None')),
   add column if not exists fire_responsibility text check (fire_responsibility in ('SRA', 'LRA')),
   add column if not exists fire_agency         text,
-  -- County DEH designation; null when unknown or unrecorded
+  -- from County DEH records, wastewater districts and public sewer mains; null when unresolved
   add column if not exists sewer_service       text check (sewer_service in ('sewer', 'septic')),
+  -- how sewer_service was decided: deh_known_septic, deh_known_sewer, sewer_district, deh_assumed_sewer,
+  -- deh_likely_septic, sewer_main_nearby, deh_assumed_septic_no_main (see ingestion/study_area.py)
+  add column if not exists sewer_basis         text,
   -- true = likely in a common-interest development; null = no evidence either way (never "no HOA")
   add column if not exists hoa                 boolean,
   add column if not exists hoa_name            text,
@@ -329,7 +332,7 @@ grant select (
   equity_confidence, equity_model_version, centroid, source, source_ingested_at,
   created_at, updated_at,
   -- overlay facts are property facts, not owner data
-  fire_hazard_zone, fire_responsibility, fire_agency, sewer_service,
+  fire_hazard_zone, fire_responsibility, fire_agency, sewer_service, sewer_basis,
   hoa, hoa_name, hoa_basis, overlay_facts, overlays_as_of
 ) on parcels to authenticated;
 

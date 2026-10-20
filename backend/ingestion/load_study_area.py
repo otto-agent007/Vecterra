@@ -123,6 +123,7 @@ def build_rows(joined, *, ingested_at: Optional[str] = None, as_of: Optional[dat
             "fire_responsibility": rec.get("fire_responsibility"),
             "fire_agency": rec.get("fire_agency"),
             "sewer_service": rec.get("sewer_service"),
+            "sewer_basis": rec.get("sewer_basis"),
             "hoa": rec.get("hoa"),
             "hoa_name": rec.get("hoa_name"),
             "hoa_basis": rec.get("hoa_basis"),

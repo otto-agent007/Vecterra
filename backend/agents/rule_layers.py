@@ -26,7 +26,7 @@ Each rule carries an effective date (results depend on ``as_of``) and a status:
 Parcel overlay fields read here are optional and populated by ingestion:
 ``fire_hazard_zone`` ("Very High" | "High" | "Moderate" | "None"),
 ``fire_responsibility`` ("SRA" | "LRA"), ``fire_agency`` (display name),
-``sewer_service`` ("sewer" | "septic"), ``hoa`` (True/False or the association name), ``hoa_name``
+``sewer_service`` ("sewer" | "septic") with ``sewer_basis`` (how it was decided), ``hoa`` (True/False or the association name), ``hoa_name``
 and ``hoa_basis`` ("confirmed", or how it was inferred, e.g. "common_lot_in_subdivision").
 
 Sources are recorded per rule; the research behind them is in the Vecterra
@@ -40,7 +40,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date
 from typing import Any, Dict, List, Optional
 
-LAYERS_VERSION = "rule-layers-v1.2"
+LAYERS_VERSION = "rule-layers-v1.3"
 
 # Layer keys, in precedence order, with the homeowner-facing group label.
 LAYER_ORDER = ("state", "local", "fire", "septic", "hoa")
@@ -149,6 +149,9 @@ UNMODELED_AUTHORITIES: Dict[str, str] = {
 }
 
 HIGH_FIRE = {"very high", "high"}
+
+# sewer_basis values (ingestion/study_area.py) where "septic" is inferred rather than recorded.
+SEPTIC_INFERRED = {"deh_likely_septic", "deh_assumed_septic_no_main"}
 
 
 @dataclass
@@ -487,13 +490,31 @@ def resolve_rules(
 
     # ---- Septic / sewer overlay (stacks) ------------------------------------------------
     sewer = _norm(parcel.get("sewer_service"))
+    sewer_basis = parcel.get("sewer_basis")
+    septic_review = ("must approve an ADU on septic: a licensed layout, percolation tests and a reserve area. Adding "
+                     "an ADU usually means enlarging the system, and review takes about 60 to 90 business days.")
     if residential is not False:
-        if sewer == "septic":
+        if sewer == "septic" and sewer_basis in SEPTIC_INFERRED:
+            lead = ("County records list this lot as likely on septic" if sewer_basis == "deh_likely_septic" else
+                    "County records assume this lot is on septic, and no public sewer main is mapped within 200 ft")
+            add(ResolvedRule(
+                key="septic", layer="septic", authority="County Environmental Health", status="verify",
+                statement=f"{lead}. If so, County Environmental Health {septic_review}",
+                confirm_with="County Environmental Health", **_src("deh_septic"),
+            ))
+        elif sewer == "septic":
             add(ResolvedRule(
                 key="septic", layer="septic", authority="County Environmental Health", status="settled",
-                statement=("Must approve an ADU on septic: a licensed layout, percolation tests and a reserve area. Adding "
-                           "an ADU usually means enlarging the system, and review takes about 60 to 90 business days."),
+                statement=septic_review[0].upper() + septic_review[1:],
                 **_src("deh_septic"),
+            ))
+        elif sewer == "sewer" and sewer_basis == "sewer_main_nearby":
+            add(ResolvedRule(
+                key="sewer", layer="septic", authority="Sewer agency", status="verify",
+                statement=("A public sewer main runs within about 50 ft of this lot, so an ADU can likely connect; whether "
+                           "the house itself is connected isn't on record. Connection fees for an ADU must be in proportion "
+                           "to its size or plumbing fixtures."),
+                **_src("state_adu"),
             ))
         elif sewer == "sewer":
             add(ResolvedRule(

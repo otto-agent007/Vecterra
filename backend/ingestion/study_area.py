@@ -12,7 +12,8 @@ zoning_code / desc     Escondido Zoning (by APN); SANDAG Zoning_Unincorporated  
 fire_hazard_zone       CAL FIRE FHSZ, SRA (2023 map) + LRA (2025 map)          largest share of lot area
 fire_responsibility    same layers (SRA vs LRA)                               largest share of lot area
 fire_agency            SANDAG Fire_Agencies                                   representative point
-sewer_service          SANDAG WW_Septic_Sewer_Public (County DEH)             APN
+sewer_service / basis  County DEH designation; County wastewater districts;   APN / point /
+                       Escondido sewer mains                                  nearest main (ft)
 hoa / hoa_basis        parcels layer: subdivision with a $0 common-area lot   submap
 =====================  =====================================================  ==========================
 
@@ -91,6 +92,16 @@ SOURCES: Dict[str, Source] = {
                "CAL FIRE / State Fire Marshal", order_by="OBJECTID"),
         Source("septic_sewer", "https://geo.sandag.org/server/rest/services/Hosted/WW_Septic_Sewer_Public/FeatureServer/0",
                "County DEH septic/sewer designation", "live", SANGIS_ATTRIBUTION, geometry=False),
+        Source("wastewater_districts", "https://geo.sandag.org/server/rest/services/Hosted/Wastewater_District_CN/FeatureServer/0",
+               "County wastewater (sewer) district service areas", "live", SANGIS_ATTRIBUTION),
+        Source("sewer_gravity_escondido",
+               "https://services2.arcgis.com/eJcVbjTyyZIzZ5Ye/arcgis/rest/services/Public_Utilities/FeatureServer/3",
+               "City of Escondido sewer gravity mains", "live", "City of Escondido GIS",
+               page_size=1000, order_by="OBJECTID"),
+        Source("sewer_pressure_escondido",
+               "https://services2.arcgis.com/eJcVbjTyyZIzZ5Ye/arcgis/rest/services/Public_Utilities/FeatureServer/2",
+               "City of Escondido sewer pressurized mains", "live", "City of Escondido GIS",
+               page_size=1000, order_by="OBJECTID"),
     )
 }
 
@@ -104,16 +115,52 @@ MUNICIPAL_CODE_TO_JURISDICTION = {
 FHSZ_CLASS = {3: "Very High", 2: "High", 1: "Moderate"}  # anything else (e.g. -3 NonWildland) -> "None"
 FIRE_ORDER = ("Very High", "High", "Moderate", "None")
 
-SEWER_DESIGNATION = {
-    "assumed sewer connected (per infrastructure)": "sewer",
-    "known sewer connected": "sewer",
-    "known septic connected": "septic",
-    "likely septic connected": "septic",
-    # "Assumed Septic Connected" is DEH's weakest call (confidence 6): no sewer line is
-    # mapped nearby. It covers 171 lots inside sewered Harmony Grove Village, so it is
-    # kept in overlay_facts but not treated as septic. "Not Known" and anything
-    # unexpected -> None (not checked).
-}
+# Sewer vs septic. County DEH's designation is the starting point, but its weakest
+# call ("Assumed Septic Connected", confidence 6) is wrong inside sewered Harmony Grove
+# Village, and ~1,600 Escondido lots have no DEH record at all. Two public layers fill
+# the gap: the County's wastewater-district service areas and Escondido's sewer mains.
+# A main within SEWER_MAIN_NEAR_FT shows sewer is *available* (what an ADU needs), not
+# that the house is connected, so that basis is reported as "verify".
+SEWER_MAIN_NEAR_FT = 50.0
+SEPTIC_NO_MAIN_FT = 200.0
+
+# sewer_basis values. The rules engine reads these.
+SEWER_BASES = (
+    "deh_known_septic",            # DEH: known septic                          -> septic (settled)
+    "deh_known_sewer",             # DEH: known sewer                           -> sewer  (settled)
+    "sewer_district",              # inside a wastewater district               -> sewer  (settled)
+    "deh_assumed_sewer",           # DEH: assumed sewer, per infrastructure     -> sewer  (settled)
+    "deh_likely_septic",           # DEH: likely septic                         -> septic (verify)
+    "sewer_main_nearby",           # public main within 50 ft                   -> sewer  (verify)
+    "deh_assumed_septic_no_main",  # DEH assumed septic, no main within 200 ft  -> septic (verify)
+)
+
+
+def resolve_sewer(designation: Any, *, in_sewer_district: bool,
+                  nearest_main_ft: Optional[float]) -> Tuple[Optional[str], Optional[str]]:
+    """(sewer_service, sewer_basis) from DEH's designation plus the two infrastructure layers.
+
+    A DEH septic finding of "known" or "likely" always wins, even next to a main: some
+    lots with a sewer in the street were never connected.
+    """
+    d = _s(designation).lower()
+    near = nearest_main_ft is not None and nearest_main_ft <= SEWER_MAIN_NEAR_FT
+    far = nearest_main_ft is None or nearest_main_ft > SEPTIC_NO_MAIN_FT
+    if d == "known septic connected":
+        return "septic", "deh_known_septic"
+    if d == "known sewer connected":
+        return "sewer", "deh_known_sewer"
+    if d == "likely septic connected":
+        return "septic", "deh_likely_septic"
+    if in_sewer_district:
+        return "sewer", "sewer_district"
+    if d.startswith("assumed sewer connected"):
+        return "sewer", "deh_assumed_sewer"
+    if near:
+        return "sewer", "sewer_main_nearby"
+    if d == "assumed septic connected" and far:
+        return "septic", "deh_assumed_septic_no_main"
+    return None, None  # "Not Known", no record, or assumed septic with a main 50-200 ft away
 
 # Fire agency labels in SANDAG Fire_Agencies -> the name a homeowner would recognize.
 FIRE_AGENCY_NAMES = {
@@ -396,8 +443,22 @@ def classify_fire(shares: Dict[str, float]) -> Dict[str, Any]:
     }
 
 
-def sewer_from_designation(designation: Any) -> Optional[str]:
-    return SEWER_DESIGNATION.get(_s(designation).lower())
+def sewer_infrastructure(parcels: gpd.GeoDataFrame, districts: gpd.GeoDataFrame,
+                         mains: List[Optional[gpd.GeoDataFrame]]) -> pd.DataFrame:
+    """Per lot: the wastewater district containing it (if any) and the distance to the nearest public sewer main."""
+    if districts is not None and not districts.empty:
+        district = _point_lookup(parcels, districts, ["label"])["label"]
+    else:
+        district = pd.Series(None, index=parcels.index, dtype=object)
+    lines = [m[["geometry"]] for m in mains if m is not None and not m.empty]
+    dist = pd.Series(float("nan"), index=parcels.index)
+    if lines:
+        main_gdf = gpd.GeoDataFrame(pd.concat(lines, ignore_index=True), crs=4326).to_crs(WORK_CRS)
+        lots = parcels[["geometry"]].to_crs(WORK_CRS)
+        near = gpd.sjoin_nearest(lots, main_gdf, how="left", max_distance=SEPTIC_NO_MAIN_FT, distance_col="_d")
+        near = near[~near.index.duplicated(keep="first")]
+        dist = near["_d"].reindex(parcels.index)
+    return pd.DataFrame({"district": district, "nearest_main_ft": dist}, index=parcels.index)
 
 
 def hoa_flags(parcels: pd.DataFrame) -> pd.DataFrame:
@@ -447,6 +508,8 @@ def join_overlays(parcels: gpd.GeoDataFrame, frames: Dict[str, Any], *, as_of: O
     shares = fire_shares(out, frames["fhsz_sra"], frames["fhsz_lra"])
     agency = _point_lookup(out, frames["fire_agencies"], ["label", "designator", "entity"])
 
+    infra = sewer_infrastructure(out, frames.get("wastewater_districts"),
+                                 [frames.get("sewer_gravity_escondido"), frames.get("sewer_pressure_escondido")])
     sewer_df = frames["septic_sewer"]
     sewer_map: Dict[str, Tuple[str, Any]] = {}
     if not sewer_df.empty:
@@ -457,16 +520,19 @@ def join_overlays(parcels: gpd.GeoDataFrame, frames: Dict[str, Any], *, as_of: O
     out["hoa"], out["hoa_basis"] = hoa["hoa"], hoa["hoa_basis"]
     out["hoa_name"] = None
 
-    fire_zone, fire_resp, fire_agency, sewer, facts = [], [], [], [], []
+    fire_zone, fire_resp, fire_agency, sewer, sewer_basis, facts = [], [], [], [], [], []
     for i, (idx, row) in enumerate(out.iterrows()):
         f = classify_fire(shares.loc[idx].dropna().to_dict() if idx in shares.index else {})
         label = _s(agency.at[idx, "label"])
         unserved = label.lower().startswith("unserved")
         designation, confidence = sewer_map.get(row["apn"], (None, None))
-        svc = sewer_from_designation(designation)
+        district = _s(infra.at[idx, "district"]) or None
+        main_ft = infra.at[idx, "nearest_main_ft"]
+        main_ft = None if pd.isna(main_ft) else round(float(main_ft), 1)
+        svc, basis = resolve_sewer(designation, in_sewer_district=bool(district), nearest_main_ft=main_ft)
         fire_zone.append(f["zone"]); fire_resp.append(f["responsibility"])
         fire_agency.append(None if (unserved or not label) else FIRE_AGENCY_NAMES.get(label, label))
-        sewer.append(svc)
+        sewer.append(svc); sewer_basis.append(basis)
         facts.append({
             "as_of": as_of.isoformat(),
             "jurisdiction": {"boundary": _s(juris.at[idx, "_juris_boundary"]) or None,
@@ -477,14 +543,19 @@ def join_overlays(parcels: gpd.GeoDataFrame, frames: Dict[str, Any], *, as_of: O
             "fire_agency": {"label": label or None, "designator": _s(agency.at[idx, "designator"]) or None,
                             "unserved": unserved},
             "sewer": {"designation": designation or None,
-                      "confidence": int(confidence) if confidence not in (None, "") and not pd.isna(confidence) else None},
+                      "confidence": int(confidence) if confidence not in (None, "") and not pd.isna(confidence) else None,
+                      "basis": basis,
+                      "district": district,
+                      "nearest_main_ft": main_ft},  # null when no public main is mapped within 200 ft
             "hoa": ({"basis": row["hoa_basis"], "submap": _s(row["_submap"]) or None} if row["hoa"] else None),
             "sources": {k: {"title": SOURCES[k].title, "as_of": SOURCES[k].as_of, "note": SOURCES[k].note}
-                        for k in ("parcels", "municipal", "fhsz_sra", "fhsz_lra", "fire_agencies", "septic_sewer")},
+                        for k in ("parcels", "municipal", "fhsz_sra", "fhsz_lra", "fire_agencies", "septic_sewer",
+                                  "wastewater_districts", "sewer_gravity_escondido")},
         })
     obj = lambda values: pd.Series(values, index=out.index, dtype=object)  # keep None as None, not NaN
     out["fire_hazard_zone"], out["fire_responsibility"] = obj(fire_zone), obj(fire_resp)
     out["fire_agency"], out["sewer_service"], out["overlay_facts"] = obj(fire_agency), obj(sewer), obj(facts)
+    out["sewer_basis"] = obj(sewer_basis)
     out["overlays_as_of"] = as_of.isoformat()
     return out
 
@@ -525,6 +596,7 @@ def summarize(gdf: pd.DataFrame) -> Dict[str, Any]:
         "fire_responsibility": tab("fire_responsibility"),
         "fire_agency": tab("fire_agency"),
         "sewer_service": tab("sewer_service"),
+        "sewer_basis": tab("sewer_basis"),
         "hoa": tab("hoa"),
         "zoning_code_missing": {j: int(n) for j, n in gdf[gdf["zoning_code"].isna()]["jurisdiction"].value_counts().items()},
     }

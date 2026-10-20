@@ -6,7 +6,7 @@ from datetime import date
 
 import geopandas as gpd
 import pandas as pd
-from shapely.geometry import box
+from shapely.geometry import LineString, box
 
 from agents.zoning_rules import evaluate_zoning
 from ingestion.load_study_area import build_rows
@@ -19,7 +19,7 @@ from ingestion.study_area import (
     parse_doc_date,
     parse_two_digit_year,
     parcel_attributes,
-    sewer_from_designation,
+    resolve_sewer,
 )
 
 TODAY = date(2026, 10, 20)
@@ -56,7 +56,7 @@ def sangis(apn, i, **kw):
 
 
 def frames(parcel_records, *, municipal=None, sra=None, lra=None, agencies=None, esc_zoning=None,
-           county_zoning=None, septic=None):
+           county_zoning=None, septic=None, districts=None, mains=None):
     g = lambda rows: gpd.GeoDataFrame(rows, geometry="geometry", crs=4326) if rows else gpd.GeoDataFrame(geometry=[], crs=4326)
     return {
         "parcels": g(parcel_records),
@@ -68,6 +68,9 @@ def frames(parcel_records, *, municipal=None, sra=None, lra=None, agencies=None,
         "fhsz_lra": g(lra or []),
         "septic_sewer": pd.DataFrame(septic or [], columns=["apn", "sewer_septic_parcel_designation",
                                                             "septic_sewer_designation_confid"]),
+        "wastewater_districts": g(districts or []),
+        "sewer_gravity_escondido": g(mains or []),
+        "sewer_pressure_escondido": g([]),
     }
 
 
@@ -175,11 +178,43 @@ def test_zoning_agency_and_sewer_joins():
     assert out.at["C2", "overlay_facts"]["sewer"]["designation"] == "Not Known"
 
 
-def test_sewer_designation_mapping():
-    assert sewer_from_designation("Likely Septic Connected") == "septic"
-    assert sewer_from_designation("Assumed Septic Connected") is None  # weakest DEH call; kept in facts only
-    assert sewer_from_designation("Not Known") is None
-    assert sewer_from_designation(None) is None
+def test_resolve_sewer_order_of_evidence():
+    r = lambda d, district=False, ft=None: resolve_sewer(d, in_sewer_district=district, nearest_main_ft=ft)
+    # a recorded septic finding wins even next to a main or inside a district
+    assert r("Known Septic Connected", district=True, ft=10) == ("septic", "deh_known_septic")
+    assert r("Likely Septic Connected", ft=10) == ("septic", "deh_likely_septic")
+    # a wastewater district overrides DEH's weakest call (Harmony Grove Village)
+    assert r("Assumed Septic Connected", district=True) == ("sewer", "sewer_district")
+    assert r("Not Known", district=True) == ("sewer", "sewer_district")
+    assert r(None, district=True) == ("sewer", "sewer_district")
+    assert r("Assumed Sewer Connected (per infrastructure)") == ("sewer", "deh_assumed_sewer")
+    # a public main within 50 ft: sewer available
+    assert r(None, ft=50.0) == ("sewer", "sewer_main_nearby")
+    assert r("Not Known", ft=12) == ("sewer", "sewer_main_nearby")
+    # DEH's assumed septic stands only with no main within 200 ft
+    assert r("Assumed Septic Connected", ft=None) == ("septic", "deh_assumed_septic_no_main")
+    assert r("Assumed Septic Connected", ft=120) == (None, None)
+    assert r("Not Known", ft=None) == (None, None)
+    assert r(None, ft=75) == (None, None)
+
+
+def test_join_overlays_uses_sewer_district_and_mains():
+    street_y = Y0 - 0.00005  # ~18 ft south of the lots' front line
+    fr = frames(
+        [sangis("IN", 0), sangis("NEAR", 1, situs_juris="ES"), sangis("FAR", 2)],
+        municipal=[{"code": "CN", "geometry": box(-117.2, 33.0, -117.0, 33.2)}],
+        districts=[{"label": "Rincon del Diablo Municipal Water District", "geometry": lot(0).buffer(0.0001)}],
+        mains=[{"geometry": LineString([(X0 + 2 * D, street_y), (X0 + 3 * D, street_y)])}],
+        septic=[{"apn": "IN", "sewer_septic_parcel_designation": "Assumed Septic Connected", "septic_sewer_designation_confid": 6},
+                {"apn": "FAR", "sewer_septic_parcel_designation": "Assumed Septic Connected", "septic_sewer_designation_confid": 6}],
+    )
+    out = join_overlays(build_parcels(fr, today=TODAY), fr, as_of=TODAY).set_index("apn")
+    assert (out.at["IN", "sewer_service"], out.at["IN", "sewer_basis"]) == ("sewer", "sewer_district")
+    assert out.at["IN", "overlay_facts"]["sewer"]["district"] == "Rincon del Diablo Municipal Water District"
+    assert (out.at["NEAR", "sewer_service"], out.at["NEAR", "sewer_basis"]) == ("sewer", "sewer_main_nearby")
+    assert out.at["NEAR", "overlay_facts"]["sewer"]["nearest_main_ft"] < 50
+    assert (out.at["FAR", "sewer_service"], out.at["FAR", "sewer_basis"]) == ("septic", "deh_assumed_septic_no_main")
+    assert out.at["FAR", "overlay_facts"]["sewer"]["nearest_main_ft"] is None
 
 
 def test_hoa_flags_whole_tract_with_a_common_lot_and_never_says_no_hoa():
@@ -225,6 +260,19 @@ def test_unmodeled_city_is_named_not_unresolved():
     assert rules["local_authority"]["authority"] == "City of San Marcos"
     assert rules["local_authority"]["status"] == "not_checked"
     assert z["rule_layers"]["land_use_authority"] == "City of San Marcos"
+
+
+def test_inferred_sewer_and_septic_are_verify():
+    base = {"apn": "X", "jurisdiction": "san_diego_county", "zoning_code": "RR", "lot_area_sqft": 60000,
+            "living_area_sqft": 2000, "year_built": 1985}
+    rules = lambda **kw: {r["key"]: r for r in evaluate_zoning({**base, **kw}, as_of=TODAY)["rule_layers"]["rules"]}
+    assert rules(sewer_service="septic", sewer_basis="deh_known_septic")["septic"]["status"] == "settled"
+    assumed = rules(sewer_service="septic", sewer_basis="deh_assumed_septic_no_main")["septic"]
+    assert assumed["status"] == "verify" and "no public sewer main" in assumed["statement"]
+    assert rules(sewer_service="septic", sewer_basis="deh_likely_septic")["septic"]["status"] == "verify"
+    nearby = rules(sewer_service="sewer", sewer_basis="sewer_main_nearby")["sewer"]
+    assert nearby["status"] == "verify" and "50 ft" in nearby["statement"]
+    assert rules(sewer_service="sewer", sewer_basis="sewer_district")["sewer"]["status"] == "settled"
 
 
 def test_inferred_hoa_is_verify_not_settled():

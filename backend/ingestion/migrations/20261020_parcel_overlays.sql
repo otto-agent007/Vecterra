@@ -21,8 +21,11 @@ alter table parcels
   add column if not exists fire_hazard_zone    text check (fire_hazard_zone in ('Very High', 'High', 'Moderate', 'None')),
   add column if not exists fire_responsibility text check (fire_responsibility in ('SRA', 'LRA')),
   add column if not exists fire_agency         text,                 -- display name; null when the map shows no agency
-  -- County DEH septic/sewer designation; null when the County lists it as unknown or has no record
+  -- sewer or septic from County DEH records, wastewater districts and public sewer mains; null when unresolved
   add column if not exists sewer_service       text check (sewer_service in ('sewer', 'septic')),
+  -- how sewer_service was decided: deh_known_septic, deh_known_sewer, sewer_district, deh_assumed_sewer,
+  -- deh_likely_septic, sewer_main_nearby, deh_assumed_septic_no_main (see ingestion/study_area.py)
+  add column if not exists sewer_basis         text,
   -- true = likely in a common-interest development; null = not checked / no evidence (never "no HOA")
   add column if not exists hoa                 boolean,
   add column if not exists hoa_name            text,                 -- only when confirmed from a filing or the owner
@@ -37,6 +40,6 @@ create index if not exists parcels_jurisdiction_idx on parcels (jurisdiction);
 -- Overlay facts are property facts, so agents may read them alongside the
 -- other public-record columns. Owner PII and tax_data stay service-role only.
 grant select (
-  fire_hazard_zone, fire_responsibility, fire_agency, sewer_service,
+  fire_hazard_zone, fire_responsibility, fire_agency, sewer_service, sewer_basis,
   hoa, hoa_name, hoa_basis, overlay_facts, overlays_as_of
 ) on parcels to authenticated;

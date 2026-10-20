@@ -15,9 +15,23 @@ set local search_path = public, extensions;
 -- Fixture ----------------------------------------------------------------------
 insert into auth.users (id) values (:'agent_a'), (:'agent_b');
 
-insert into parcels (apn, situs_address, situs_zip, owner_name, owner_mailing_address, tax_data, estimated_equity, geom)
+insert into parcels (apn, situs_address, situs_zip, owner_name, owner_mailing_address, tax_data, estimated_equity,
+                     jurisdiction, fire_hazard_zone, fire_responsibility, sewer_service, hoa, hoa_basis, overlay_facts, geom)
 values ('TEST-001', '1 Test Rd', '92029', 'SECRET OWNER', 'PO BOX 1', '{"secret":1}', 500000,
+        'city_of_san_marcos', 'Very High', 'SRA', 'septic', true, 'common_lot_in_subdivision', '{"fire":{"shares":{"Very High":1}}}',
         st_geomfromtext('POLYGON((-117.12 33.09,-117.11 33.09,-117.11 33.10,-117.12 33.10,-117.12 33.09))', 4326));
+
+-- overlay checks reject values the rules engine doesn't understand
+do $$ begin
+  begin
+    update parcels set fire_hazard_zone = 'Extreme' where apn = 'TEST-001';
+    raise exception 'ASSERTION FAILED: fire_hazard_zone accepted an unknown class';
+  exception when check_violation then null; end;
+  begin
+    update parcels set sewer_service = 'cesspool' where apn = 'TEST-001';
+    raise exception 'ASSERTION FAILED: sewer_service accepted an unknown value';
+  exception when check_violation then null; end;
+end $$;
 
 insert into property_scans (id, apn, captured_by, image_paths)
 select '33333333-3333-3333-3333-333333333333', 'TEST-001', :'agent_a', '{TEST-001/x/photo-1.jpg}';
@@ -50,6 +64,7 @@ set local role anon;
 select pg_temp.assert_denied('select id from parcels limit 1',           'anon cannot read parcels');
 select pg_temp.assert_denied('select id from property_scans limit 1',    'anon cannot read scans');
 select pg_temp.assert_denied('select id from dossiers limit 1',          'anon cannot read dossiers');
+select pg_temp.assert_denied('select fire_hazard_zone from parcels limit 1', 'anon cannot read overlay columns');
 select pg_temp.assert_denied('select * from parcels_in_bbox(-180,-90,180,90)', 'anon cannot call parcels_in_bbox');
 reset role;
 
@@ -60,6 +75,7 @@ select set_config('request.jwt.claim.sub', :'agent_a', true);
 -- public-record columns are readable
 select pg_temp.assert_count('select count(*) from parcels where apn = ''TEST-001''', 1, 'agent reads public parcel columns');
 select pg_temp.assert_count('select count(*) from (select apn, situs_address, estimated_equity, zoning_code from parcels) t', 1, 'agent reads allowed column list');
+select pg_temp.assert_count('select count(*) from parcels where fire_hazard_zone = ''Very High'' and sewer_service = ''septic'' and hoa and overlay_facts ? ''fire'' and jurisdiction = ''city_of_san_marcos''', 1, 'agent reads overlay columns');
 
 -- owner PII and raw assessor blob are NOT
 select pg_temp.assert_denied('select owner_name from parcels',            'agent cannot read owner_name');

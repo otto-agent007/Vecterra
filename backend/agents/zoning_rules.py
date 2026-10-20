@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional
 
 from .rule_layers import STATE_FLOOR, resolve_rules
 
-RULES_VERSION = "zoning-rules-v0.2"
+RULES_VERSION = "zoning-rules-v0.3"
 
 # State-law floor that applies regardless of jurisdiction (Gov. Code ADU
 # statutes, formerly § 65852.2; recodified as §§ 66310 et seq.).
@@ -63,6 +63,27 @@ JURISDICTION_RULES: Dict[str, Dict[str, Any]] = {
         "notes": [
             "Escondido offers pre-approved ADU plans; eligibility depends on lot configuration.",
         ],
+    },
+    # The study-area bbox clips a few parcels in two more cities. Their ADU
+    # ordinances aren't modeled: no zoning codes are loaded and only the state
+    # floor applies, but the dossier names the right authority.
+    "city_of_san_marcos": {
+        "name": "City of San Marcos",
+        "ordinance": None,
+        "verify": "Confirm ADU rules with the City of San Marcos Planning Division.",
+        "residential_zone_prefixes": (),
+        "adu_max_attached_pct_of_primary": 50,
+        "front_setback_ft_typical": 20,
+        "notes": ["Vecterra doesn't model the City of San Marcos's ADU ordinance yet; only state law is applied."],
+    },
+    "city_of_san_diego": {
+        "name": "City of San Diego",
+        "ordinance": None,
+        "verify": "Confirm ADU rules with the City of San Diego Development Services Department.",
+        "residential_zone_prefixes": (),
+        "adu_max_attached_pct_of_primary": 50,
+        "front_setback_ft_typical": 20,
+        "notes": ["Vecterra doesn't model the City of San Diego's ADU ordinance yet; only state law is applied."],
     },
     "unknown": {
         "name": "Jurisdiction not yet resolved",

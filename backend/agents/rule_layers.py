@@ -26,7 +26,8 @@ Each rule carries an effective date (results depend on ``as_of``) and a status:
 Parcel overlay fields read here are optional and populated by ingestion:
 ``fire_hazard_zone`` ("Very High" | "High" | "Moderate" | "None"),
 ``fire_responsibility`` ("SRA" | "LRA"), ``fire_agency`` (display name),
-``sewer_service`` ("sewer" | "septic") and ``hoa`` (True/False or the association name).
+``sewer_service`` ("sewer" | "septic"), ``hoa`` (True/False or the association name), ``hoa_name``
+and ``hoa_basis`` ("confirmed", or how it was inferred, e.g. "common_lot_in_subdivision").
 
 Sources are recorded per rule; the research behind them is in the Vecterra
 project docs (research/*.md). This is a working model of the law, not legal advice.
@@ -39,7 +40,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date
 from typing import Any, Dict, List, Optional
 
-LAYERS_VERSION = "rule-layers-v1.1"
+LAYERS_VERSION = "rule-layers-v1.2"
 
 # Layer keys, in precedence order, with the homeowner-facing group label.
 LAYER_ORDER = ("state", "local", "fire", "septic", "hoa")
@@ -138,6 +139,13 @@ LOCAL_AUTHORITIES: Dict[str, Dict[str, Any]] = {
         "adu_condo_sale": "not_opted_in",
         "sb9_excludes_high_fire": None,  # not researched
     },
+}
+
+# Jurisdictions the study-area bbox clips but Vecterra doesn't model yet. They get
+# named as the land-use authority, with only state law applied.
+UNMODELED_AUTHORITIES: Dict[str, str] = {
+    "city_of_san_marcos": "City of San Marcos",
+    "city_of_san_diego": "City of San Diego",
 }
 
 HIGH_FIRE = {"very high", "high"}
@@ -276,7 +284,8 @@ def resolve_rules(
     """Resolve every layer for one parcel and record who sets each rule."""
     as_of = as_of or date.today()
     local = local_override if local_override is not None else LOCAL_AUTHORITIES.get(jurisdiction)
-    local_name = local["name"] if local else "Local authority not yet resolved"
+    unmodeled_name = UNMODELED_AUTHORITIES.get(jurisdiction) if local is None else None
+    local_name = local["name"] if local else (unmodeled_name or "Local authority not yet resolved")
 
     numbers, conflicts = resolve_numbers(local, as_of)
     rules: List[ResolvedRule] = []
@@ -352,7 +361,14 @@ def resolve_rules(
             ))
 
     # ---- Local land-use authority (exactly one) -------------------------------------
-    if local is None:
+    if local is None and unmodeled_name:
+        add(ResolvedRule(
+            key="local_authority", layer="local", authority=unmodeled_name, status="not_checked",
+            statement=(f"This lot is in the {unmodeled_name}, whose ADU rules Vecterra hasn't modeled yet, "
+                       "so only state law is applied."),
+            confirm_with=unmodeled_name,
+        ))
+    elif local is None:
         add(ResolvedRule(
             key="local_authority", layer="local", authority="Local rules", status="not_checked",
             statement=("We haven't confirmed whether this lot is in the City of Escondido or unincorporated County, "
@@ -501,13 +517,24 @@ def resolve_rules(
         reach = (" That applies on any lot zoned to allow a single-family home, including planned developments."
                  if after_ab956 else "")
         if hoa:
-            hoa_name = hoa if isinstance(hoa, str) else "The HOA"
-            add(ResolvedRule(
-                key="hoa_review", layer="hoa", authority=hoa_name, status="settled",
-                statement=("Can review an ADU's design alongside the permit, but can't ban it or impose unreasonable "
-                           "restrictions." + reach),
-                **_src(hoa_src),
-            ))
+            hoa_name = parcel.get("hoa_name") or (hoa if isinstance(hoa, str) else "The HOA")
+            basis = parcel.get("hoa_basis")
+            if basis and basis != "confirmed":
+                # Inferred from records (e.g. a $0 common-area lot in the subdivision), not confirmed.
+                add(ResolvedRule(
+                    key="hoa_review", layer="hoa", authority=hoa_name, status="verify",
+                    statement=("County records suggest this lot is in a community association (its subdivision has "
+                               "a common-area lot). If so, the association can review an ADU's design alongside the "
+                               "permit, but can't ban it or impose unreasonable restrictions." + reach),
+                    **_src(hoa_src),
+                ))
+            else:
+                add(ResolvedRule(
+                    key="hoa_review", layer="hoa", authority=hoa_name, status="settled",
+                    statement=("Can review an ADU's design alongside the permit, but can't ban it or impose unreasonable "
+                               "restrictions." + reach),
+                    **_src(hoa_src),
+                ))
             if _upcoming(as_of, AB956_EFFECTIVE):
                 add(ResolvedRule(
                     key="hoa_planned_dev", layer="hoa", authority=hoa_name, status="upcoming",
